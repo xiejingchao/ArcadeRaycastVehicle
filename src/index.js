@@ -303,7 +303,7 @@ const init = async () => {
 			if(index == 0 || index == 3) wheelMesh.rotate(Axis.Y, Math.PI, Space.LOCAL)
 		})
 		const maxSpeedSound = Math.min(Math.abs(vehicle.speed), vehiclePhysicsConfig.maxVehicleSpeedMps)
-		const gearProgression = maxSpeedSound / (vehiclePhysicsConfig.maxVehicleSpeedMps / vehiclePhysicsConfig.numberOfGears)
+		const gearProgression = (maxSpeedSound * vehiclePhysicsConfig.numberOfGears) / vehiclePhysicsConfig.maxVehicleSpeedMps
 		const currentGearNumber = Math.floor(gearProgression)
 		const gearRatio = gearProgression-currentGearNumber
 		revSound.setPlaybackRate((currentGearNumber/vehiclePhysicsConfig.numberOfGears)+1.2*gearRatio)
