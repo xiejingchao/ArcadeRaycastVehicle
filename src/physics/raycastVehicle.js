@@ -184,7 +184,11 @@ class RaycastVehicle {
     }
 
     updateVehiclePredictiveLanding(dtSeconds) {
-        if (this.nWheelsOnGround > 0 || this.predictiveLookAheadSeconds <= 0) {
+        if (this.predictiveLookAheadSeconds < 0) {
+            throw new Error(`vehicle.predictiveLookAheadSeconds must be >= 0. Received ${this.predictiveLookAheadSeconds}`)
+        }
+
+        if (this.nWheelsOnGround > 0 || this.predictiveLookAheadSeconds === 0) {
             return
         }
 

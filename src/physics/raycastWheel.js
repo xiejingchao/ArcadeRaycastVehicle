@@ -4,6 +4,13 @@ import { assertNonNegativeNumber, assertPositiveNumber } from '../utils/utils.js
 
 class RaycastWheel{
     constructor(options){
+		if (options.springRate !== undefined && options.suspensionForce !== undefined) {
+			throw new Error('Use either wheel.springRate or legacy wheel.suspensionForce, not both.')
+		}
+		if (options.damperRate !== undefined && options.suspensionDamping !== undefined) {
+			throw new Error('Use either wheel.damperRate or legacy wheel.suspensionDamping, not both.')
+		}
+
         this.positionLocal = options.positionLocal.clone()
         this.positionWorld = options.positionLocal.clone()
         this.suspensionAxisLocal = options.suspensionAxisLocal.clone()

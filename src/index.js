@@ -46,6 +46,7 @@ const init = async () => {
 		timeStep: simulationConfig.fixedTimeStepSeconds
 	})
 	const scene = new Scene(engine)
+	// Convert to ms for Babylon's frame-delta clamp: 8 steps * (1/120)s = 66.7ms.
 	Scene.MaxDeltaTime = simulationConfig.fixedTimeStepSeconds * simulationConfig.maxPhysicsStepsPerFrame * 1000
 	
 	const camera = new FreeCamera("camera1", new Vector3(0, 5, -10), scene)
@@ -302,7 +303,7 @@ const init = async () => {
 			if(index == 0 || index == 3) wheelMesh.rotate(Axis.Y, Math.PI, Space.LOCAL)
 		})
 		const maxSpeedSound = Math.min(Math.abs(vehicle.speed), vehiclePhysicsConfig.maxVehicleSpeedMps)
-		const gearProgression = maxSpeedSound/(vehiclePhysicsConfig.maxVehicleSpeedMps/vehiclePhysicsConfig.numberOfGears) % vehiclePhysicsConfig.maxVehicleSpeedMps
+		const gearProgression = maxSpeedSound / (vehiclePhysicsConfig.maxVehicleSpeedMps / vehiclePhysicsConfig.numberOfGears)
 		const currentGearNumber = Math.floor(gearProgression)
 		const gearRatio = gearProgression-currentGearNumber
 		revSound.setPlaybackRate((currentGearNumber/vehiclePhysicsConfig.numberOfGears)+1.2*gearRatio)
