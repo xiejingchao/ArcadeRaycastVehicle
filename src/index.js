@@ -1,5 +1,5 @@
-import { Vector3, Quaternion } from '@babylonjs/core/maths/math.vector.js'
-import { Axis, Space } from '@babylonjs/core/maths/math.axis.js'
+import { Vector3, Quaternion } from '@babylonjs/core/Maths/math.vector.js'
+import { Axis, Space } from '@babylonjs/core/Maths/math.axis.js'
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder.js'
 import { Engine } from '@babylonjs/core/Engines/engine.js'
 import { Scene } from '@babylonjs/core/scene.js'
@@ -26,6 +26,7 @@ import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader.js'
 import HavokPhysics from "@babylonjs/havok"
 import RaycastVehicle from './physics/raycastVehicle.js'
 import RaycastWheel from './physics/raycastWheel.js'
+import { clampNumber, moveTowards } from './utils/utils.js'
 
 import { Sound } from '@babylonjs/core/Audio/sound.js'
 import '@babylonjs/core/Audio/audioSceneComponent.js'
@@ -35,8 +36,17 @@ import { Animation } from '@babylonjs/core/Animations/animation.js'
 
 const init = async () => {
 	const canvas = document.getElementById("renderCanvas")
-    const engine = new Engine(canvas, true)
+	const simulationConfig = {
+		fixedTimeStepSeconds: 1 / 120,
+		maxPhysicsStepsPerFrame: 8
+	}
+	const engine = new Engine(canvas, true, {
+		deterministicLockstep: true,
+		lockstepMaxSteps: simulationConfig.maxPhysicsStepsPerFrame,
+		timeStep: simulationConfig.fixedTimeStepSeconds
+	})
 	const scene = new Scene(engine)
+	Scene.MaxDeltaTime = simulationConfig.fixedTimeStepSeconds * simulationConfig.maxPhysicsStepsPerFrame * 1000
 	
 	const camera = new FreeCamera("camera1", new Vector3(0, 5, -10), scene)
 	camera.setTarget(Vector3.Zero())
@@ -69,6 +79,8 @@ const init = async () => {
     const physicsPlugin = new HavokPlugin(false, HK)
     scene.enablePhysics(gravityVector, physicsPlugin)
     const physicsEngine = scene.getPhysicsEngine()
+	physicsEngine.setTimeStep(simulationConfig.fixedTimeStepSeconds)
+	physicsEngine.setSubTimeStep(0)
 	
 	const levelRootNode = levelFiles.rootNodes[0]
 	levelRootNode.scaling.set(.3,.3,.3)
@@ -126,6 +138,7 @@ const init = async () => {
     const chassisPhysicsBody = new PhysicsBody(chassisMesh, PhysicsMotionType.DYNAMIC, false, scene);
     chassisPhysicsBody.shape = chassisPhysicsShape
     chassisPhysicsBody.setMassProperties({
+		mass: 1200, // kg
 		centerOfMass: new Vector3(0, -0.5, 0)
     })
 	chassisPhysicsShape.filterMembershipMask = 2
@@ -140,21 +153,30 @@ const init = async () => {
 	scene.activeCamera = followCamera
 	
 	const vehicle = new RaycastVehicle(chassisPhysicsBody, scene)
-	vehicle.numberOfFramesToPredict = 60//Number of frames to predict future upwards orientation if airborne
-	vehicle.predictionRatio = 0.8//[0-1]How quickly to correct angular velocity towards future orientation. 0 = disabled
+	const vehiclePhysicsConfig = {
+		predictiveLookAheadSeconds: 0.5,
+		predictionRatio: 0.8,
+		maxVehicleSpeedMps: 60,
+		maxDriveForceNewton: 2200,
+		numberOfGears: 5,
+		maxSteerAngleRadians: 0.6,
+		steerRateRadiansPerSecond: 2.5,
+		steerReturnRateRadiansPerSecond: 4.5
+	}
+	vehicle.predictiveLookAheadSeconds = vehiclePhysicsConfig.predictiveLookAheadSeconds
+	vehicle.predictionRatio = vehiclePhysicsConfig.predictionRatio
 	
 	const wheelConfig = {
 		positionLocal:new Vector3(0.49, 0, -0.7),//Local connection point on the chassis
-		suspensionRestLength:0.6, //Rest length when suspension is fully decompressed
-		suspensionForce:15000, //Max force to apply to the suspension/spring 
-		suspensionDamping:0.15, //[0-1] Damper force in percentage of suspensionForce
+		suspensionRestLength:0.6, // m
+		springRate:30000, // N/m
+		damperRate:4500, // N*s/m
 		suspensionAxisLocal:new Vector3(0,-1,0),//Direction of the spring
 		axleAxisLocal:new Vector3(1,0,0),//Axis the wheel spins around
 		forwardAxisLocal:new Vector3(0,0,1),//Forward direction of the wheel
 		sideForcePositionRatio:0.1,//[0-1]0 = wheel position, 1 = connection point 
-		sideForce:40,//Force applied to counter wheel drifting
-		radius:0.2,
-		rotationMultiplier:0.1//How fast to spin the wheel
+		sideForce:40,//Temporary arcade lateral force gain, not a brush tire model
+		radius:0.2 // m
 	}
 
 	vehicle.addWheel(new RaycastWheel(wheelConfig))//Right rear
@@ -213,16 +235,7 @@ const init = async () => {
 		}
     })
 	
-	const maxVehicleSpeed = 60
-	const maxVehicleForce = 2200
-	const numberOfGears = 5	
-	const maxSteerValue = 0.6 
-    const steeringIncrement = 0.005
-    const steerRecover = 0.05
 	let currentGear = 0	
-	let vehicleAirborne = false
-	let steering = 0
-    let force = 0
 	let forwardForce = 0
     let steerValue = 0
     let steerDirection = 0
@@ -231,25 +244,41 @@ const init = async () => {
     
 	
 	revSound.play()
-	scene.onBeforeRenderObservable.add(()=>{
+	scene.onBeforePhysicsObservable.add(() => {
+		const dtSeconds = simulationConfig.fixedTimeStepSeconds
 		forwardForce = 0
         steerDirection = 0
 		if(controls.forward) forwardForce = 1
         if(controls.backward) forwardForce = -1
         if(controls.left) steerDirection = -1
         if(controls.right) steerDirection = 1
-      
-        steerValue += steerDirection*steeringIncrement
-        steerValue = Math.min(Math.max(steerValue, -maxSteerValue), maxSteerValue)
-        steerValue *= 1-(1-Math.abs(steerDirection))*steerRecover
+
+		if(steerDirection !== 0){
+			steerValue = moveTowards(
+				steerValue,
+				steerDirection * vehiclePhysicsConfig.maxSteerAngleRadians,
+				vehiclePhysicsConfig.steerRateRadiansPerSecond * dtSeconds
+			)
+		}else{
+			steerValue = moveTowards(
+				steerValue,
+				0,
+				vehiclePhysicsConfig.steerReturnRateRadiansPerSecond * dtSeconds
+			)
+		}
+		steerValue = clampNumber(
+			steerValue,
+			-vehiclePhysicsConfig.maxSteerAngleRadians,
+			vehiclePhysicsConfig.maxSteerAngleRadians
+		)
 		vehicle.wheels[2].steering = steerValue
 		vehicle.wheels[3].steering = steerValue
 
 		
-		const speed = Math.min(Math.abs(vehicle.speed), maxVehicleSpeed)
-        const prog = (speed/maxVehicleSpeed)*100
+		const speed = Math.min(Math.abs(vehicle.speed), vehiclePhysicsConfig.maxVehicleSpeedMps)
+        const prog = (speed/vehiclePhysicsConfig.maxVehicleSpeedMps)*100
         const acceleration = accelerationCurve.evaluate(prog)
-        const force2 = acceleration*forwardForce*maxVehicleForce
+        const force2 = acceleration*forwardForce*vehiclePhysicsConfig.maxDriveForceNewton
 		const brakeForceMultiplier = Math.sign(vehicle.speed) !== Math.sign(force2) ? 2 : 1
 		vehicle.wheels[2].force = force2*brakeForceMultiplier
 		vehicle.wheels[3].force = force2*brakeForceMultiplier
@@ -262,8 +291,9 @@ const init = async () => {
 		vehicle.wheels[1].sideForce = slipForce
 		*/
 
-		vehicle.update()
-		
+		vehicle.update(dtSeconds)
+	})
+	scene.onBeforeRenderObservable.add(()=>{
 		vehicle.wheels.forEach((wheel, index) => {
 			if(!wheelMeshes[index]) return
 			const wheelMesh = wheelMeshes[index]
@@ -271,11 +301,11 @@ const init = async () => {
 			wheelMesh.rotationQuaternion.copyFrom(wheel.transform.rotationQuaternion)
 			if(index == 0 || index == 3) wheelMesh.rotate(Axis.Y, Math.PI, Space.LOCAL)
 		})
-		const maxSpeedSound = Math.min(Math.abs(vehicle.speed), maxVehicleSpeed)
-		const gearProgression = maxSpeedSound/(maxVehicleSpeed/numberOfGears) % maxVehicleSpeed
+		const maxSpeedSound = Math.min(Math.abs(vehicle.speed), vehiclePhysicsConfig.maxVehicleSpeedMps)
+		const gearProgression = maxSpeedSound/(vehiclePhysicsConfig.maxVehicleSpeedMps/vehiclePhysicsConfig.numberOfGears) % vehiclePhysicsConfig.maxVehicleSpeedMps
 		const currentGearNumber = Math.floor(gearProgression)
 		const gearRatio = gearProgression-currentGearNumber
-		revSound.setPlaybackRate((currentGearNumber/numberOfGears)+1.2*gearRatio)
+		revSound.setPlaybackRate((currentGearNumber/vehiclePhysicsConfig.numberOfGears)+1.2*gearRatio)
 		if(currentGear !== currentGearNumber){
 			currentGear = currentGearNumber
 			shiftSound.play()
