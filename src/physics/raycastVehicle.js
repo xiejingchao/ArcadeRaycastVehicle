@@ -190,7 +190,7 @@ class RaycastVehicle {
 
         const position = this.body.transformNode.position
         const gravity = tmp1.copyFrom(this.physicsEngine.gravity).scaleInPlace(this.body.getGravityFactor())
-        const predictTime = Math.max(dtSeconds, this.predictiveLookAheadSeconds)
+        const predictTime = this.predictiveLookAheadSeconds
         const linearVelocity = this.body.getLinearVelocity()
 
         if (linearVelocity.lengthSquared() === 0) {

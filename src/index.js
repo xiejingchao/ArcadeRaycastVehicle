@@ -139,7 +139,7 @@ const init = async () => {
     chassisPhysicsBody.shape = chassisPhysicsShape
     chassisPhysicsBody.setMassProperties({
 		mass: 1200, // kg
-		centerOfMass: new Vector3(0, -0.5, 0)
+		centerOfMass: new Vector3(0, -0.5, 0) // m
     })
 	chassisPhysicsShape.filterMembershipMask = 2
 	
