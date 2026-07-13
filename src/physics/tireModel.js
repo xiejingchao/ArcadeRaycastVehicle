@@ -170,7 +170,7 @@ const computeForgivingMagicFormulaForce = ({
     const transitionMagnitude = Math.max(Math.abs(postPeakTransition), EPSILON)
     const peakForceAtStartN = Math.abs(
         computeMagicFormulaBase(
-            (Math.sign(signedSlip) || 1) * postPeakStart,
+            Math.sign(signedSlip) * postPeakStart,
             effectiveStiffnessFactorB,
             shapeFactorC,
             curvatureFactorE,

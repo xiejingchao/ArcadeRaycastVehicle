@@ -131,6 +131,30 @@ test('post-peak retention avoids a large drop after the balanced preset peak reg
     assert.ok(Math.abs(samples[3] - samples[4]) <= peakForce * POST_PEAK_MAX_VARIATION_RATIO)
 })
 
+test('all presets keep a usable post-peak plateau without a force cliff', () => {
+    Object.entries(TIRE_MODEL_PRESETS).forEach(([presetName, preset]) => {
+        const samples = [0.12, 0.18, 0.26, 0.36].map((slipRatio) =>
+            Math.abs(
+                computeTireForces({
+                    model: DEFAULT_TIRE_MODEL,
+                    normalLoadN: 3200,
+                    surfaceFriction: preset.surfaceFriction,
+                    longitudinalGripRatio: preset.longitudinalGripRatio,
+                    lateralGripRatio: preset.lateralGripRatio,
+                    pacejkaLongitudinal: preset.pacejkaLongitudinal,
+                    pacejkaLateral: preset.pacejkaLateral,
+                    slipAngleRad: 0,
+                    slipRatio
+                }).rawLongitudinalForceN
+            )
+        )
+        const peakForce = Math.max(...samples)
+        const postPeakMinimum = Math.min(...samples.slice(1))
+
+        assert.ok(postPeakMinimum >= peakForce * 0.75, presetName)
+    })
+})
+
 test('pacejka outputs remain finite and continuous over common slip ranges', () => {
     let previousLongitudinal = null
     let previousLateral = null
