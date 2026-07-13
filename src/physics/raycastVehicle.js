@@ -7,10 +7,12 @@ import {
     assertPositiveNumber,
     computeSuspensionForce
 } from '../utils/utils.js'
+import { computeBrushTireForces } from './tireModel.js'
 
 const tmp1 = new Vector3()
 const tmp2 = new Vector3()
 const tmp3 = new Vector3()
+const tmp4 = new Vector3()
 const tmpq1 = new Quaternion()
 const upAxisLocal = new Vector3(0, 1, 0)
 const rightAxisLocal = new Vector3(1, 0, 0)
@@ -31,6 +33,11 @@ class RaycastVehicle {
         this.nWheelsOnGround = 0
         this.speed = 0
         this.antiRollAxles = []
+
+        this.minSlipVelocityDenominatorMps = 1
+        this.maxSlipRatioMagnitude = 3
+        this.maxSlipAngleMagnitudeRad = Math.PI / 2
+        this.angularVelocityStopThresholdRadPerSec = 0.5
     }
 
     addWheel(wheel) {
@@ -76,6 +83,21 @@ class RaycastVehicle {
         wheel.transform.computeWorldMatrix(true)
     }
 
+    resetWheelTireState(wheel) {
+        wheel.normalLoadN = 0
+        wheel.longitudinalVelocityMps = 0
+        wheel.lateralVelocityMps = 0
+        wheel.slipAngleRad = 0
+        wheel.slipRatio = 0
+        wheel.longitudinalForceN = 0
+        wheel.lateralForceN = 0
+        wheel.rawLongitudinalForceN = 0
+        wheel.rawLateralForceN = 0
+        wheel.combinedForceScale = 0
+        wheel.combinedForceUtilization = 0
+        wheel.frictionLimitN = 0
+    }
+
     updateWheelRaycast(wheel) {
         tmp1.copyFrom(wheel.suspensionAxisWorld).scaleInPlace(wheel.suspensionRestLength).addInPlace(wheel.positionWorld)
         this.physicsEngine.raycastToRef(wheel.positionWorld, tmp1, raycastResult)
@@ -83,6 +105,8 @@ class RaycastVehicle {
         if (!raycastResult.hasHit) {
             wheel.inContact = false
             wheel.hitDistance = wheel.suspensionRestLength
+            wheel.hitPoint.copyFrom(wheel.positionWorld)
+            wheel.hitNormal.copyFrom(wheel.suspensionAxisWorld).negateInPlace().normalize()
             return
         }
 
@@ -97,6 +121,7 @@ class RaycastVehicle {
         if (!wheel.inContact) {
             wheel.previousSuspensionCompressionMeters = 0
             wheel.suspensionCompressionMeters = 0
+            wheel.normalLoadN = 0
             return
         }
 
@@ -110,14 +135,13 @@ class RaycastVehicle {
         wheel.previousSuspensionCompressionMeters = previousCompressionMeters
         wheel.suspensionCompressionMeters = compressionMeters
 
-        // Linear spring-damper suspension in SI units:
-        // springForce = k * x, damperForce = c * xDot, total normal force is never negative.
         const { suspensionForce } = computeSuspensionForce(
             wheel.springRate,
             compressionMeters,
             wheel.damperRate,
             compressionVelocityMps
         )
+        wheel.normalLoadN = suspensionForce
 
         const suspensionForceVector = Vector3.TransformNormalToRef(
             wheel.suspensionAxisLocal.negateToRef(tmp1),
@@ -128,50 +152,146 @@ class RaycastVehicle {
         this.body.applyForce(suspensionForceVector, wheel.hitPoint)
     }
 
-    updateWheelSideForce(wheel, dtSeconds) {
+    computeWheelContactFrame(wheel) {
+        const forwardRaw = Vector3.TransformNormalToRef(wheel.forwardAxisLocal, wheel.transform.getWorldMatrix(), tmp1)
         if (!wheel.inContact) {
+            wheel.contactForwardWorld = forwardRaw.normalizeToRef(wheel.contactForwardWorld ?? new Vector3())
+            wheel.contactLateralWorld = Vector3.TransformNormalToRef(
+                wheel.axleAxisLocal,
+                wheel.transform.getWorldMatrix(),
+                wheel.contactLateralWorld ?? new Vector3()
+            ).normalize()
             return
         }
 
-        const tireWorldVel = getBodyVelocityAtPoint(this.body, wheel.positionWorld)
-        const steeringDir = Vector3.TransformNormalToRef(wheel.axleAxisLocal, wheel.transform.getWorldMatrix(), tmp1)
-        const steeringVel = Vector3.Dot(steeringDir, tireWorldVel)
-        const desiredVelChange = -steeringVel
-        const desiredAccel = desiredVelChange / dtSeconds
+        const contactNormal = wheel.hitNormal.normalizeToRef(tmp2)
+        const lateralRaw = Vector3.TransformNormalToRef(wheel.axleAxisLocal, wheel.transform.getWorldMatrix(), tmp3)
 
-        this.body.applyForce(
-            // Temporary arcade lateral force gain, not a brush tire model.
-            steeringDir.scaleInPlace(wheel.sideForce * desiredAccel),
-            Vector3.LerpToRef(wheel.hitPoint, wheel.positionWorld, wheel.sideForcePositionRatio, tmp2)
+        const lateralProjection = lateralRaw.subtractToRef(
+            contactNormal.scaleToRef(Vector3.Dot(lateralRaw, contactNormal), tmp4),
+            wheel.contactLateralWorld ?? new Vector3()
+        )
+
+        if (lateralProjection.lengthSquared() < 1e-8) {
+            Vector3.CrossToRef(contactNormal, forwardRaw, lateralProjection)
+        }
+
+        lateralProjection.normalize()
+        const forwardTangent = Vector3.CrossToRef(lateralProjection, contactNormal, wheel.contactForwardWorld ?? new Vector3())
+        if (forwardTangent.lengthSquared() < 1e-8) {
+            forwardRaw.subtractToRef(contactNormal.scaleToRef(Vector3.Dot(forwardRaw, contactNormal), tmp4), forwardTangent)
+        }
+        forwardTangent.normalize()
+
+        if (Vector3.Dot(forwardTangent, forwardRaw) < 0) {
+            forwardTangent.scaleInPlace(-1)
+            lateralProjection.scaleInPlace(-1)
+        }
+
+        wheel.contactForwardWorld = forwardTangent
+        wheel.contactLateralWorld = lateralProjection
+    }
+
+    updateWheelTireKinematics(wheel) {
+        this.computeWheelContactFrame(wheel)
+
+        const contactPoint = wheel.inContact ? wheel.hitPoint : wheel.positionWorld
+        const tireWorldVel = getBodyVelocityAtPoint(this.body, contactPoint)
+
+        wheel.longitudinalVelocityMps = Vector3.Dot(wheel.contactForwardWorld, tireWorldVel)
+        wheel.lateralVelocityMps = Vector3.Dot(wheel.contactLateralWorld, tireWorldVel)
+
+        const speedDenominator = Math.max(Math.abs(wheel.longitudinalVelocityMps), this.minSlipVelocityDenominatorMps)
+        const wheelSurfaceSpeedMps = wheel.angularVelocityRadPerSec * wheel.radius
+
+        wheel.slipAngleRad = clampNumber(
+            Math.atan2(wheel.lateralVelocityMps, speedDenominator),
+            -this.maxSlipAngleMagnitudeRad,
+            this.maxSlipAngleMagnitudeRad
+        )
+        wheel.slipRatio = clampNumber(
+            (wheelSurfaceSpeedMps - wheel.longitudinalVelocityMps) / speedDenominator,
+            -this.maxSlipRatioMagnitude,
+            this.maxSlipRatioMagnitude
         )
     }
 
-    updateWheelForce(wheel) {
-        if (!wheel.inContact || wheel.force === 0) {
+    updateWheelTireForces(wheel) {
+        if (!wheel.inContact || wheel.normalLoadN <= 0) {
+            wheel.longitudinalForceN = 0
+            wheel.lateralForceN = 0
+            wheel.rawLongitudinalForceN = 0
+            wheel.rawLateralForceN = 0
+            wheel.frictionLimitN = 0
+            wheel.combinedForceScale = 0
+            wheel.combinedForceUtilization = 0
             return
         }
 
-        const forwardDirectionWorld = Vector3.TransformNormalToRef(
-            wheel.forwardAxisLocal,
-            wheel.transform.getWorldMatrix(),
-            tmp1
-        ).scaleInPlace(wheel.force)
+        const tireForces = computeBrushTireForces({
+            normalLoadN: wheel.normalLoadN,
+            slipAngleRad: wheel.slipAngleRad,
+            slipRatio: wheel.slipRatio,
+            surfaceFriction: wheel.surfaceFriction,
+            longitudinalStiffnessPerLoad: wheel.longitudinalStiffnessPerLoad,
+            corneringStiffnessPerLoad: wheel.corneringStiffnessPerLoad,
+            longitudinalShape: wheel.longitudinalShape,
+            lateralShape: wheel.lateralShape,
+            longitudinalGripRatio: wheel.longitudinalGripRatio,
+            lateralGripRatio: wheel.lateralGripRatio
+        })
 
-        this.body.applyForce(forwardDirectionWorld, tmp2.copyFrom(wheel.hitPoint))
+        wheel.rawLongitudinalForceN = tireForces.rawLongitudinalForceN
+        wheel.rawLateralForceN = tireForces.rawLateralForceN
+        wheel.longitudinalForceN = tireForces.longitudinalForceN
+        wheel.lateralForceN = tireForces.lateralForceN
+        wheel.frictionLimitN = tireForces.frictionLimitN
+        wheel.combinedForceScale = tireForces.combinedForceScale
+        wheel.combinedForceUtilization = tireForces.combinedForceUtilization
+
+        const tireForceWorld = wheel.contactForwardWorld
+            .scaleToRef(wheel.longitudinalForceN, tmp1)
+            .addInPlace(wheel.contactLateralWorld.scaleToRef(wheel.lateralForceN, tmp2))
+
+        this.body.applyForce(tireForceWorld, wheel.hitPoint)
+    }
+
+    updateWheelAngularDynamics(wheel, dtSeconds) {
+        const angularDirectionSource =
+            Math.abs(wheel.angularVelocityRadPerSec) > this.angularVelocityStopThresholdRadPerSec
+                ? wheel.angularVelocityRadPerSec
+                : wheel.longitudinalVelocityMps / wheel.radius
+        const spinDirection = Math.sign(angularDirectionSource)
+
+        const brakeTorqueNm = wheel.canBrake ? Math.min(Math.abs(wheel.brakeTorqueNm), wheel.maxBrakeTorqueNm) : 0
+        const brakeTorqueOpposingSpinNm = spinDirection === 0 ? 0 : brakeTorqueNm * spinDirection
+        const rollingResistanceTorqueNm =
+            wheel.inContact && spinDirection !== 0
+                ? wheel.rollingResistanceCoefficient * wheel.normalLoadN * wheel.radius * spinDirection
+                : 0
+        const groundReactionTorqueNm = wheel.inContact ? wheel.longitudinalForceN * wheel.radius : 0
+        const angularDampingTorqueNm = wheel.angularDampingNmPerRadPerSec * wheel.angularVelocityRadPerSec
+
+        const netTorqueNm =
+            wheel.driveTorqueNm -
+            brakeTorqueOpposingSpinNm -
+            groundReactionTorqueNm -
+            rollingResistanceTorqueNm -
+            angularDampingTorqueNm
+
+        const angularAccelerationRadPerSec2 = netTorqueNm / wheel.wheelInertiaKgM2
+        let nextAngularVelocityRadPerSec = wheel.angularVelocityRadPerSec + angularAccelerationRadPerSec2 * dtSeconds
+
+        if (spinDirection !== 0 && Math.sign(nextAngularVelocityRadPerSec) !== spinDirection && Math.abs(brakeTorqueNm) > 0) {
+            nextAngularVelocityRadPerSec = 0
+        }
+
+        wheel.angularVelocityRadPerSec = nextAngularVelocityRadPerSec
+        wheel.visualAngularVelocity = wheel.angularVelocityRadPerSec
     }
 
     updateWheelRotation(wheel, dtSeconds) {
-        const wheelPointVelocity = getBodyVelocityAtPoint(this.body, wheel.positionWorld)
-        const forwardDirectionWorld = Vector3.TransformNormalToRef(
-            wheel.forwardAxisLocal,
-            wheel.transform.getWorldMatrix(),
-            tmp1
-        )
-
-        // Temporary no-slip visual approximation until real wheel angular dynamics exist:
-        // angularSpeed(rad/s) ~= linearSpeed(m/s) / radius(m)
-        wheel.visualAngularVelocity = Vector3.Dot(forwardDirectionWorld, wheelPointVelocity) / wheel.radius
-        wheel.rotation += wheel.visualAngularVelocity * dtSeconds
+        wheel.rotation += wheel.angularVelocityRadPerSec * dtSeconds
 
         Quaternion.RotationAxisToRef(wheel.axleAxisLocal, wheel.rotation, tmpq1)
         wheel.transform.rotationQuaternion.multiplyToRef(tmpq1, wheel.transform.rotationQuaternion)
@@ -221,6 +341,25 @@ class RaycastVehicle {
         )
     }
 
+    getWheelTelemetrySnapshot() {
+        return this.wheels.map((wheel, index) => ({
+            index,
+            inContact: wheel.inContact,
+            normalLoadN: wheel.normalLoadN,
+            longitudinalVelocityMps: wheel.longitudinalVelocityMps,
+            lateralVelocityMps: wheel.lateralVelocityMps,
+            slipAngleRad: wheel.slipAngleRad,
+            slipRatio: wheel.slipRatio,
+            angularVelocityRadPerSec: wheel.angularVelocityRadPerSec,
+            longitudinalForceN: wheel.longitudinalForceN,
+            lateralForceN: wheel.lateralForceN,
+            rawLongitudinalForceN: wheel.rawLongitudinalForceN,
+            rawLateralForceN: wheel.rawLateralForceN,
+            combinedForceScale: wheel.combinedForceScale,
+            surfaceFriction: wheel.surfaceFriction
+        }))
+    }
+
     update(dtSeconds) {
         assertPositiveNumber(dtSeconds, 'vehicle.update(dtSeconds)')
 
@@ -233,10 +372,15 @@ class RaycastVehicle {
             this.updateWheelSteering(wheel)
             this.updateWheelRaycast(wheel)
             this.updateWheelSuspension(wheel, dtSeconds)
-            this.updateWheelForce(wheel)
-            this.updateWheelSideForce(wheel, dtSeconds)
+            this.updateWheelTireKinematics(wheel)
+            this.updateWheelTireForces(wheel)
+            this.updateWheelAngularDynamics(wheel, dtSeconds)
             this.updateWheelTransformPosition(wheel)
             this.updateWheelRotation(wheel, dtSeconds)
+
+            if (!wheel.inContact) {
+                wheel.normalLoadN = 0
+            }
         })
 
         this.updateVehiclePredictiveLanding(dtSeconds)
