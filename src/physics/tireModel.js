@@ -111,6 +111,7 @@ const computeMagicFormulaBase = (slipInput, stiffnessFactorB, shapeFactorC, curv
     )
 
 const deriveMagicFormulaB = ({ peakSlip, shapeFactorC, curvatureFactorE, stiffnessFactorB }) => {
+    // A preset can override B directly when a hand-tuned stiffness works better than the semantic estimate.
     if (Number.isFinite(stiffnessFactorB) && stiffnessFactorB > 0) {
         return stiffnessFactorB
     }
@@ -169,7 +170,7 @@ const computeForgivingMagicFormulaForce = ({
     const transitionMagnitude = Math.max(Math.abs(postPeakTransition), EPSILON)
     const peakForceAtStartN = Math.abs(
         computeMagicFormulaBase(
-            Math.sign(signedSlip || 1) * postPeakStart,
+            (Math.sign(signedSlip) || 1) * postPeakStart,
             effectiveStiffnessFactorB,
             shapeFactorC,
             curvatureFactorE,

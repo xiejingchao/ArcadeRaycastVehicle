@@ -8,6 +8,10 @@ import {
     computeTireForces
 } from '../src/physics/tireModel.js'
 
+const POST_PEAK_MAX_VARIATION_RATIO = 0.18
+const MAX_LONGITUDINAL_DISCONTINUITY_N = 1300
+const MAX_LATERAL_DISCONTINUITY_N = 500
+
 const basePacejkaInput = {
     model: DEFAULT_TIRE_MODEL,
     normalLoadN: 3000,
@@ -123,8 +127,8 @@ test('post-peak retention avoids a large drop after the balanced preset peak reg
     const postPeakMinimum = Math.min(...samples.slice(2))
 
     assert.ok(postPeakMinimum >= peakForce * 0.8)
-    assert.ok(Math.abs(samples[2] - samples[3]) <= peakForce * 0.18)
-    assert.ok(Math.abs(samples[3] - samples[4]) <= peakForce * 0.18)
+    assert.ok(Math.abs(samples[2] - samples[3]) <= peakForce * POST_PEAK_MAX_VARIATION_RATIO)
+    assert.ok(Math.abs(samples[3] - samples[4]) <= peakForce * POST_PEAK_MAX_VARIATION_RATIO)
 })
 
 test('pacejka outputs remain finite and continuous over common slip ranges', () => {
@@ -146,8 +150,8 @@ test('pacejka outputs remain finite and continuous over common slip ranges', () 
         assert.ok(Number.isFinite(result.lateralForceN))
 
         if (previousLongitudinal !== null) {
-            assert.ok(Math.abs(result.rawLongitudinalForceN - previousLongitudinal) < 1300)
-            assert.ok(Math.abs(result.rawLateralForceN - previousLateral) < 500)
+            assert.ok(Math.abs(result.rawLongitudinalForceN - previousLongitudinal) < MAX_LONGITUDINAL_DISCONTINUITY_N)
+            assert.ok(Math.abs(result.rawLateralForceN - previousLateral) < MAX_LATERAL_DISCONTINUITY_N)
         }
 
         previousLongitudinal = result.rawLongitudinalForceN

@@ -229,13 +229,17 @@ const drawTireCurveDebugger = ({ context, curveDebugger, curveSamples, wheelTele
     const lateralLimitN = curveDebugger.surfaceFriction * curveDebugger.normalLoadN * curveDebugger.lateralGripRatio
     const longitudinalYMaxN = longitudinalLimitN * 1.15
     const lateralYMaxN = lateralLimitN * 1.15
+    const debuggerHeader = [
+        'tire curve debugger',
+        `model=${curveDebugger.tireModel}`,
+        `preset=${curveDebugger.presetName}`,
+        `drawFz=${curveDebugger.normalLoadN.toFixed(0)}N`,
+        `drawMu=${curveDebugger.surfaceFriction.toFixed(2)}`,
+        `wheel=${curveDebugger.wheelIndex}`
+    ].join(' ')
 
     context.fillStyle = '#d8fdd8'
-    context.fillText(
-        `tire curve debugger model=${curveDebugger.tireModel} preset=${curveDebugger.presetName} drawFz=${curveDebugger.normalLoadN.toFixed(0)}N drawMu=${curveDebugger.surfaceFriction.toFixed(2)} wheel=${curveDebugger.wheelIndex}`,
-        chartX,
-        16
-    )
+    context.fillText(debuggerHeader, chartX, 16)
     context.fillText('cyan=pure-axis curve  orange=raw live point  green=final live point', chartX, canvasHeight - 12)
 
     drawChartFrame({
