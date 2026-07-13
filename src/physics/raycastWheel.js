@@ -1,24 +1,30 @@
-import { Vector3, Quaternion } from '@babylonjs/core/maths/math.vector.js'
-import { Axis } from '@babylonjs/core/maths/math.axis.js'
+import { Vector3, Quaternion } from '@babylonjs/core/Maths/math.vector.js'
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode.js'
+import { assertNonNegativeNumber, assertPositiveNumber } from '../utils/utils.js'
 
 class RaycastWheel{
     constructor(options){
+		if (options.springRate !== undefined && options.suspensionForce !== undefined) {
+			throw new Error('Use either wheel.springRate or legacy wheel.suspensionForce, not both.')
+		}
+		if (options.damperRate !== undefined && options.suspensionDamping !== undefined) {
+			throw new Error('Use either wheel.damperRate or legacy wheel.suspensionDamping, not both.')
+		}
+
         this.positionLocal = options.positionLocal.clone()
         this.positionWorld = options.positionLocal.clone()
         this.suspensionAxisLocal = options.suspensionAxisLocal.clone()
 		this.suspensionAxisWorld = this.suspensionAxisLocal.clone()
 		this.axleAxisLocal = options.axleAxisLocal.clone()
 		this.forwardAxisLocal = options.forwardAxisLocal.clone()
-		this.sideForce = options.sideForce || 40
-		this.sideForcePositionRatio = options.sideForcePositionRatio || 0.1
-        this.radius = options.radius || 0.2
-		this.suspensionRestLength = options.suspensionRestLength || 0.5
-		this.prevSuspensionLength = this.suspensionRestLength
-        this.suspensionLength = this.suspensionRestLength
-		this.suspensionForce = options.suspensionForce || 15000
-		this.suspensionDamping = options.suspensionDamping || 0.1
-		this.rotationMultiplier = options.rotationMultiplier || 0.1
+		this.sideForce = options.sideForce ?? 40
+		this.sideForcePositionRatio = options.sideForcePositionRatio ?? 0.1
+        this.radius = options.radius ?? 0.2
+		this.suspensionRestLength = options.suspensionRestLength ?? 0.5
+		this.springRate = options.springRate ?? options.suspensionForce ?? 15000
+		this.damperRate = options.damperRate ?? ((options.suspensionDamping ?? 0.1) * this.springRate)
+		this.suspensionCompressionMeters = 0
+		this.previousSuspensionCompressionMeters = 0
 		this.hitDistance = 0
 		this.hitNormal = new Vector3()
 		this.hitPoint = new Vector3()
@@ -26,7 +32,13 @@ class RaycastWheel{
 		
         this.steering = 0
 		this.rotation = 0
+		this.visualAngularVelocity = 0
         this.force = 0
+
+		assertPositiveNumber(this.radius, 'wheel.radius')
+		assertPositiveNumber(this.suspensionRestLength, 'wheel.suspensionRestLength')
+		assertPositiveNumber(this.springRate, 'wheel.springRate')
+		assertNonNegativeNumber(this.damperRate, 'wheel.damperRate')
 
         this.transform = new TransformNode("WheelTransform")
         this.transform.rotationQuaternion = new Quaternion()
