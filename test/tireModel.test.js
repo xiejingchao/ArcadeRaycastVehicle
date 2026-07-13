@@ -9,6 +9,8 @@ import {
 } from '../src/physics/tireModel.js'
 
 const POST_PEAK_MAX_VARIATION_RATIO = 0.18
+// These thresholds are for adjacent samples only; they are intentionally looser than a full derivative
+// bound because the test checks for visible force cliffs, not a specific fitted tire stiffness.
 const MAX_LONGITUDINAL_DISCONTINUITY_N = 1300
 const MAX_LATERAL_DISCONTINUITY_N = 500
 

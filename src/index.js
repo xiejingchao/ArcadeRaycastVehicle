@@ -509,8 +509,9 @@ const init = async () => {
         ...telemetryConfig.curveDebugger,
         tireModel: selectedTireConfig.tireModel,
         presetName: vehiclePhysicsConfig.tire.presetName,
-        // The debugger may draw against a different mu than gameplay for comparison,
-        // but this override only affects the render-time reference curves.
+        // The debugger may draw against a different mu than gameplay for comparison.
+        // This override only affects the render-time reference curves; setting it to 0 deliberately
+        // draws a zero-grip reference without changing the gameplay tire forces.
         surfaceFriction: telemetryConfig.curveDebugger.surfaceFriction ?? selectedTireConfig.surfaceFriction,
         longitudinalGripRatio: selectedTireConfig.longitudinalGripRatio,
         lateralGripRatio: selectedTireConfig.lateralGripRatio

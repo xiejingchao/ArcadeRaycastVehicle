@@ -155,7 +155,7 @@ const computeForgivingMagicFormulaForce = ({
     assertPositiveFiniteNumber(Math.max(Math.abs(postPeakTransition), EPSILON), 'tire.postPeakTransition')
     assertPositiveFiniteNumber(postPeakRetention, 'tire.postPeakRetention')
 
-    const signedSlip = Number.isFinite(slipInput) ? slipInput : 0
+    const signedSlip = slipInput
     const slipMagnitude = Math.abs(signedSlip)
     const effectivePeakForceN = frictionLimitN * peakGripRatio
     const effectiveStiffnessFactorB = deriveMagicFormulaB({

@@ -34,6 +34,8 @@ https://raggardk.github.io/
 
   `F(x) = D * sin(C * atan(Bx - E * (Bx - atan(Bx))))`
 
+  Here `x` is slip ratio `κ` for `Fx`, or slip angle `α` for `Fy`.
+
 - The implementation uses **semantic per-axis tuning** in `src/physics/tireModel.js`:
   - `peakSlip` — target slip location for the main peak region (`kappa` for longitudinal, `rad` for lateral)
   - `shapeFactorC` — how rounded or sharp the main peak feels
