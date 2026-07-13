@@ -517,6 +517,7 @@ const init = async () => {
     }
     // These samples are a render-time reference for the HUD only.
     // They call the same tire-model module as gameplay, but they do not feed back into the fixed-step update.
+    // If you change the tire config in code, rebuild/restart so the debugger regenerates against the new setup.
     const curveSamples = curveDebuggerConfig.enabled
         ? buildPureAxisCurveSamples({
               tireModel: selectedTireConfig.tireModel,

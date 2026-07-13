@@ -95,11 +95,19 @@ const assertPositiveFiniteNumber = (value, name) => {
     }
 }
 
+// Hermite smoothstep on [0, 1]. We use it to ease post-peak blending so the
+// retained-force plateau joins the main curve without a derivative jump.
 const smoothStep01 = (value) => {
     const t = clampNumber(value, 0, 1)
     return t * t * (3 - 2 * t)
 }
 
+// Simplified Magic Formula core:
+// - B: stiffness / initial build-up
+// - C: overall shape / peak roundness
+// - D: peak force
+// - E: curvature close to the peak
+// This is intentionally the compact single-input form, not the full Pacejka data-fit model.
 const computeMagicFormulaBase = (slipInput, stiffnessFactorB, shapeFactorC, curvatureFactorE, peakForceN) =>
     peakForceN *
     Math.sin(
@@ -110,6 +118,10 @@ const computeMagicFormulaBase = (slipInput, stiffnessFactorB, shapeFactorC, curv
             )
     )
 
+// Derive a usable B when the preset only specifies a semantic peak-slip target.
+// If a valid explicit B override is present we trust it; otherwise we use a stable approximation
+// that scales with 1 / peakSlip. The `1.01` floor keeps the tangent away from its singularity as
+// C approaches 1, which avoids exploding B values for forgiving street-style presets.
 const deriveMagicFormulaB = ({ peakSlip, shapeFactorC, curvatureFactorE, stiffnessFactorB }) => {
     // A preset can override B directly when a hand-tuned stiffness works better than the semantic estimate.
     // Zero, negative, or non-finite overrides are ignored so we can safely fall back to the semantic derivation.

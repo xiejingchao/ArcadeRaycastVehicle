@@ -35,8 +35,9 @@ test('returns zero force with zero normal load or zero friction', () => {
         slipAngleRad: 0.2,
         slipRatio: 0.3
     })
+    const zeroForceCases = [zeroLoad, zeroFriction]
 
-    ;[zeroLoad, zeroFriction].forEach((result) => {
+    zeroForceCases.forEach((result) => {
         assert.equal(result.longitudinalForceN, 0)
         assert.equal(result.lateralForceN, 0)
         assert.equal(result.frictionLimitN, 0)
