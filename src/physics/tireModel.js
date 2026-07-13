@@ -112,6 +112,7 @@ const computeMagicFormulaBase = (slipInput, stiffnessFactorB, shapeFactorC, curv
 
 const deriveMagicFormulaB = ({ peakSlip, shapeFactorC, curvatureFactorE, stiffnessFactorB }) => {
     // A preset can override B directly when a hand-tuned stiffness works better than the semantic estimate.
+    // Zero, negative, or non-finite overrides are ignored so we can safely fall back to the semantic derivation.
     if (Number.isFinite(stiffnessFactorB) && stiffnessFactorB > 0) {
         return stiffnessFactorB
     }
@@ -315,9 +316,9 @@ const computePacejkaTireForces = ({
         frictionLimitN,
         ...pacejkaLongitudinal
     })
+    // Positive slip angle means the patch velocity points to wheel-right, so the tire force must
+    // point left to resist that motion.
     const rawLateralForceN = computeForgivingMagicFormulaForce({
-        // Positive slip angle means the patch velocity points to wheel-right, so the tire force must
-        // point left to resist that motion.
         slipInput: -clampedSlipAngleRad,
         frictionLimitN,
         ...pacejkaLateral

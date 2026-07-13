@@ -185,11 +185,13 @@ test('pacejka outputs remain finite and continuous over common slip ranges', () 
 
 test('combined slip limit does not exceed friction ellipse', () => {
     const result = computeTireForces({
-        ...basePacejkaInput,
+        model: DEFAULT_TIRE_MODEL,
         normalLoadN: 4000,
         surfaceFriction: 1,
         longitudinalGripRatio: 0.9,
         lateralGripRatio: 1.1,
+        pacejkaLongitudinal: basePacejkaInput.pacejkaLongitudinal,
+        pacejkaLateral: basePacejkaInput.pacejkaLateral,
         slipAngleRad: 0.4,
         slipRatio: 1.2
     })
