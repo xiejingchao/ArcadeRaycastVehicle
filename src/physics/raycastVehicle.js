@@ -7,7 +7,7 @@ import {
     assertPositiveNumber,
     computeSuspensionForce
 } from '../utils/utils.js'
-import { computeBrushTireForces } from './tireModel.js'
+import { computeTireForces } from './tireModel.js'
 
 const tmp1 = new Vector3()
 const tmp2 = new Vector3()
@@ -204,6 +204,9 @@ class RaycastVehicle {
         const speedDenominator = Math.max(Math.abs(wheel.longitudinalVelocityMps), this.minSlipVelocityDenominatorMps)
         const wheelSurfaceSpeedMps = wheel.angularVelocityRadPerSec * wheel.radius
 
+        // Sign convention:
+        // - slipAngle > 0 when the contact patch velocity has a +lateral component
+        // - slipRatio > 0 when wheel surface speed is faster than ground speed (driving slip)
         wheel.slipAngleRad = clampNumber(
             Math.atan2(wheel.lateralVelocityMps, speedDenominator),
             -this.maxSlipAngleMagnitudeRad,
@@ -228,7 +231,8 @@ class RaycastVehicle {
             return
         }
 
-        const tireForces = computeBrushTireForces({
+        const tireForces = computeTireForces({
+            model: wheel.tireModel,
             normalLoadN: wheel.normalLoadN,
             slipAngleRad: wheel.slipAngleRad,
             slipRatio: wheel.slipRatio,
@@ -238,7 +242,9 @@ class RaycastVehicle {
             longitudinalShape: wheel.longitudinalShape,
             lateralShape: wheel.lateralShape,
             longitudinalGripRatio: wheel.longitudinalGripRatio,
-            lateralGripRatio: wheel.lateralGripRatio
+            lateralGripRatio: wheel.lateralGripRatio,
+            pacejkaLongitudinal: wheel.pacejkaLongitudinal,
+            pacejkaLateral: wheel.pacejkaLateral
         })
 
         wheel.rawLongitudinalForceN = tireForces.rawLongitudinalForceN
@@ -269,6 +275,8 @@ class RaycastVehicle {
             wheel.inContact && spinDirection !== 0
                 ? wheel.rollingResistanceCoefficient * wheel.normalLoadN * wheel.radius * spinDirection
                 : 0
+        // The contact patch force generates an equal-and-opposite torque on the wheel.
+        // Positive Fx drives the chassis forward, so it subtracts from the wheel's spin torque.
         const groundReactionTorqueNm = wheel.inContact ? wheel.longitudinalForceN * wheel.radius : 0
         const angularDampingTorqueNm = wheel.angularDampingNmPerRadPerSec * wheel.angularVelocityRadPerSec
 
@@ -356,7 +364,10 @@ class RaycastVehicle {
             rawLongitudinalForceN: wheel.rawLongitudinalForceN,
             rawLateralForceN: wheel.rawLateralForceN,
             combinedForceScale: wheel.combinedForceScale,
-            surfaceFriction: wheel.surfaceFriction
+            combinedForceUtilization: wheel.combinedForceUtilization,
+            frictionLimitN: wheel.frictionLimitN,
+            surfaceFriction: wheel.surfaceFriction,
+            tireModel: wheel.tireModel
         }))
     }
 

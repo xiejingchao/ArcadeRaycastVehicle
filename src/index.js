@@ -25,6 +25,12 @@ import HavokPhysics from '@babylonjs/havok'
 import RaycastVehicle from './physics/raycastVehicle.js'
 import RaycastWheel from './physics/raycastWheel.js'
 import { clampNumber, moveTowards } from './utils/utils.js'
+import {
+    DEFAULT_TIRE_MODEL,
+    DEFAULT_TIRE_PRESET,
+    TIRE_MODEL_PRESETS,
+    computeTireForces
+} from './physics/tireModel.js'
 
 import { Sound } from '@babylonjs/core/Audio/sound.js'
 import '@babylonjs/core/Audio/audioSceneComponent.js'
@@ -32,6 +38,298 @@ import '@babylonjs/core/Audio/audioSceneComponent.js'
 import { Animation } from '@babylonjs/core/Animations/animation.js'
 
 const tmp1 = new Vector3()
+const RAD_TO_DEG = 180 / Math.PI
+
+const createOverlayElement = (tagName, style) => {
+    const element = document.createElement(tagName)
+    Object.assign(element.style, style)
+    document.body.appendChild(element)
+    return element
+}
+
+const drawChartFrame = ({ context, x, y, width, height, title, xLabel, yLabel, limitLabel, forceLimitN, yMaxN }) => {
+    context.strokeStyle = 'rgba(180, 245, 200, 0.3)'
+    context.strokeRect(x, y, width, height)
+
+    context.fillStyle = '#d8fdd8'
+    context.fillText(title, x, y - 10)
+    context.fillText(xLabel, x + width - 70, y + height + 18)
+    context.save()
+    context.translate(x - 24, y + height * 0.5)
+    context.rotate(-Math.PI / 2)
+    context.fillText(yLabel, 0, 0)
+    context.restore()
+
+    const zeroY = y + height * 0.5
+    context.strokeStyle = 'rgba(180, 245, 200, 0.18)'
+    context.beginPath()
+    context.moveTo(x, zeroY)
+    context.lineTo(x + width, zeroY)
+    context.stroke()
+
+    const drawReferenceLine = (forceN) => {
+        const lineY = zeroY - (forceN / yMaxN) * (height * 0.5)
+        context.beginPath()
+        context.moveTo(x, lineY)
+        context.lineTo(x + width, lineY)
+        context.stroke()
+    }
+
+    context.strokeStyle = 'rgba(255, 197, 105, 0.24)'
+    drawReferenceLine(forceLimitN)
+    drawReferenceLine(-forceLimitN)
+    context.fillStyle = '#ffc569'
+    context.fillText(limitLabel, x + 8, y + 14)
+}
+
+const drawCurvePath = ({
+    context,
+    samples,
+    chartX,
+    chartY,
+    chartWidth,
+    chartHeight,
+    xMin,
+    xMax,
+    yMaxN,
+    color,
+    forceKey
+}) => {
+    context.strokeStyle = color
+    context.beginPath()
+    samples.forEach((sample, index) => {
+        const xRatio = (sample.input - xMin) / Math.max(xMax - xMin, 1e-6)
+        const yRatio = sample[forceKey] / yMaxN
+        const px = chartX + xRatio * chartWidth
+        const py = chartY + chartHeight * 0.5 - yRatio * (chartHeight * 0.5)
+        if (index === 0) {
+            context.moveTo(px, py)
+            return
+        }
+        context.lineTo(px, py)
+    })
+    context.stroke()
+}
+
+const drawCurveWorkPoint = ({
+    context,
+    chartX,
+    chartY,
+    chartWidth,
+    chartHeight,
+    xMin,
+    xMax,
+    yMaxN,
+    inputValue,
+    rawForceN,
+    finalForceN,
+    rawColor,
+    finalColor
+}) => {
+    const xRatio = clampNumber((inputValue - xMin) / Math.max(xMax - xMin, 1e-6), 0, 1)
+    const px = chartX + xRatio * chartWidth
+    const rawY = chartY + chartHeight * 0.5 - clampNumber(rawForceN / yMaxN, -1.25, 1.25) * (chartHeight * 0.5)
+    const finalY = chartY + chartHeight * 0.5 - clampNumber(finalForceN / yMaxN, -1.25, 1.25) * (chartHeight * 0.5)
+
+    context.strokeStyle = 'rgba(255,255,255,0.18)'
+    context.beginPath()
+    context.moveTo(px, chartY)
+    context.lineTo(px, chartY + chartHeight)
+    context.stroke()
+
+    context.fillStyle = rawColor
+    context.beginPath()
+    context.arc(px, rawY, 4, 0, Math.PI * 2)
+    context.fill()
+
+    context.fillStyle = finalColor
+    context.beginPath()
+    context.arc(px, finalY, 4, 0, Math.PI * 2)
+    context.fill()
+}
+
+const buildPureAxisCurveSamples = ({
+    tireModel,
+    tireConfig,
+    normalLoadN,
+    surfaceFriction,
+    longitudinalGripRatio,
+    lateralGripRatio,
+    slipRatioRange,
+    slipAngleRangeDeg,
+    sampleCount
+}) => {
+    const longitudinal = []
+    const lateral = []
+
+    for (let index = 0; index <= sampleCount; index++) {
+        const ratio = index / sampleCount
+        const slipRatio = slipRatioRange[0] + (slipRatioRange[1] - slipRatioRange[0]) * ratio
+        const longitudinalResult = computeTireForces({
+            model: tireModel,
+            normalLoadN,
+            slipAngleRad: 0,
+            slipRatio,
+            surfaceFriction,
+            longitudinalGripRatio,
+            lateralGripRatio,
+            pacejkaLongitudinal: tireConfig.pacejkaLongitudinal,
+            pacejkaLateral: tireConfig.pacejkaLateral,
+            longitudinalStiffnessPerLoad: tireConfig.longitudinalStiffnessPerLoad,
+            corneringStiffnessPerLoad: tireConfig.corneringStiffnessPerLoad,
+            longitudinalShape: tireConfig.longitudinalShape,
+            lateralShape: tireConfig.lateralShape
+        })
+        longitudinal.push({
+            input: slipRatio,
+            rawForceN: longitudinalResult.rawLongitudinalForceN
+        })
+
+        const slipAngleDeg = slipAngleRangeDeg[0] + (slipAngleRangeDeg[1] - slipAngleRangeDeg[0]) * ratio
+        const lateralResult = computeTireForces({
+            model: tireModel,
+            normalLoadN,
+            slipAngleRad: (slipAngleDeg / RAD_TO_DEG),
+            slipRatio: 0,
+            surfaceFriction,
+            longitudinalGripRatio,
+            lateralGripRatio,
+            pacejkaLongitudinal: tireConfig.pacejkaLongitudinal,
+            pacejkaLateral: tireConfig.pacejkaLateral,
+            longitudinalStiffnessPerLoad: tireConfig.longitudinalStiffnessPerLoad,
+            corneringStiffnessPerLoad: tireConfig.corneringStiffnessPerLoad,
+            longitudinalShape: tireConfig.longitudinalShape,
+            lateralShape: tireConfig.lateralShape
+        })
+        lateral.push({
+            input: slipAngleDeg,
+            rawForceN: lateralResult.rawLateralForceN
+        })
+    }
+
+    return { longitudinal, lateral }
+}
+
+const drawTireCurveDebugger = ({ context, curveDebugger, curveSamples, wheelTelemetry }) => {
+    const canvasWidth = context.canvas.width
+    const canvasHeight = context.canvas.height
+    context.clearRect(0, 0, canvasWidth, canvasHeight)
+    context.fillStyle = 'rgba(0, 0, 0, 0.82)'
+    context.fillRect(0, 0, canvasWidth, canvasHeight)
+    context.font = '12px monospace'
+
+    const chartWidth = 320
+    const chartHeight = 130
+    const chartGap = 36
+    const chartX = 22
+    const topY = 34
+    const bottomY = topY + chartHeight + chartGap
+
+    const longitudinalLimitN = curveDebugger.surfaceFriction * curveDebugger.normalLoadN * curveDebugger.longitudinalGripRatio
+    const lateralLimitN = curveDebugger.surfaceFriction * curveDebugger.normalLoadN * curveDebugger.lateralGripRatio
+    const longitudinalYMaxN = longitudinalLimitN * 1.15
+    const lateralYMaxN = lateralLimitN * 1.15
+    const debuggerHeader = [
+        'tire curve debugger',
+        `model=${curveDebugger.tireModel}`,
+        `preset=${curveDebugger.presetName}`,
+        `drawFz=${curveDebugger.normalLoadN.toFixed(0)}N`,
+        `drawMu=${curveDebugger.surfaceFriction.toFixed(2)}`,
+        `wheel=${curveDebugger.wheelIndex}`
+    ].join(' ')
+
+    context.fillStyle = '#d8fdd8'
+    context.fillText(debuggerHeader, chartX, 16)
+    context.fillText('cyan=pure-axis curve  orange=raw live point  green=final live point', chartX, canvasHeight - 12)
+
+    drawChartFrame({
+        context,
+        x: chartX,
+        y: topY,
+        width: chartWidth,
+        height: chartHeight,
+        title: 'Fx vs slip ratio (alpha = 0)',
+        xLabel: 'kappa',
+        yLabel: 'Fx [N]',
+        limitLabel: `±mu*Fz*gx = ${longitudinalLimitN.toFixed(0)}N`,
+        forceLimitN: longitudinalLimitN,
+        yMaxN: longitudinalYMaxN
+    })
+    drawCurvePath({
+        context,
+        samples: curveSamples.longitudinal,
+        chartX,
+        chartY: topY,
+        chartWidth,
+        chartHeight,
+        xMin: curveDebugger.slipRatioRange[0],
+        xMax: curveDebugger.slipRatioRange[1],
+        yMaxN: longitudinalYMaxN,
+        color: '#67d5ff',
+        forceKey: 'rawForceN'
+    })
+    if (wheelTelemetry) {
+        drawCurveWorkPoint({
+            context,
+            chartX,
+            chartY: topY,
+            chartWidth,
+            chartHeight,
+            xMin: curveDebugger.slipRatioRange[0],
+            xMax: curveDebugger.slipRatioRange[1],
+            yMaxN: longitudinalYMaxN,
+            inputValue: wheelTelemetry.slipRatio,
+            rawForceN: wheelTelemetry.rawLongitudinalForceN,
+            finalForceN: wheelTelemetry.longitudinalForceN,
+            rawColor: '#ffb14a',
+            finalColor: '#72f0a7'
+        })
+    }
+
+    drawChartFrame({
+        context,
+        x: chartX,
+        y: bottomY,
+        width: chartWidth,
+        height: chartHeight,
+        title: 'Fy vs slip angle (kappa = 0)',
+        xLabel: 'alpha [deg]',
+        yLabel: 'Fy [N]',
+        limitLabel: `±mu*Fz*gy = ${lateralLimitN.toFixed(0)}N`,
+        forceLimitN: lateralLimitN,
+        yMaxN: lateralYMaxN
+    })
+    drawCurvePath({
+        context,
+        samples: curveSamples.lateral,
+        chartX,
+        chartY: bottomY,
+        chartWidth,
+        chartHeight,
+        xMin: curveDebugger.slipAngleRangeDeg[0],
+        xMax: curveDebugger.slipAngleRangeDeg[1],
+        yMaxN: lateralYMaxN,
+        color: '#67d5ff',
+        forceKey: 'rawForceN'
+    })
+    if (wheelTelemetry) {
+        drawCurveWorkPoint({
+            context,
+            chartX,
+            chartY: bottomY,
+            chartWidth,
+            chartHeight,
+            xMin: curveDebugger.slipAngleRangeDeg[0],
+            xMax: curveDebugger.slipAngleRangeDeg[1],
+            yMaxN: lateralYMaxN,
+            inputValue: wheelTelemetry.slipAngleRad * RAD_TO_DEG,
+            rawForceN: wheelTelemetry.rawLateralForceN,
+            finalForceN: wheelTelemetry.lateralForceN,
+            rawColor: '#ffb14a',
+            finalColor: '#72f0a7'
+        })
+    }
+}
 
 const shapeAxisInput = (input, deadZone, exponent) => {
     const magnitude = Math.abs(input)
@@ -50,7 +348,16 @@ const init = async () => {
         maxPhysicsStepsPerFrame: 8
     }
     const telemetryConfig = {
-        enabled: false
+        enabled: false,
+        curveDebugger: {
+            enabled: false,
+            wheelIndex: 2,
+            normalLoadN: 3000,
+            surfaceFriction: null,
+            slipRatioRange: [-0.35, 0.35],
+            slipAngleRangeDeg: [-20, 20],
+            sampleCount: 72
+        }
     }
     const engine = new Engine(canvas, true, {
         deterministicLockstep: true,
@@ -180,10 +487,51 @@ const init = async () => {
             yawRateGain: 850,
             slipAngleGain: 1300,
             slipAngleThresholdRad: 0.08
+        },
+        tire: {
+            model: DEFAULT_TIRE_MODEL,
+            presetName: DEFAULT_TIRE_PRESET
         }
     }
     vehicle.predictiveLookAheadSeconds = vehiclePhysicsConfig.predictiveLookAheadSeconds
     vehicle.predictionRatio = vehiclePhysicsConfig.predictionRatio
+
+    const selectedTirePreset = TIRE_MODEL_PRESETS[vehiclePhysicsConfig.tire.presetName] ?? TIRE_MODEL_PRESETS[DEFAULT_TIRE_PRESET]
+    const selectedTireConfig = {
+        tireModel: vehiclePhysicsConfig.tire.model,
+        surfaceFriction: selectedTirePreset.surfaceFriction,
+        longitudinalGripRatio: selectedTirePreset.longitudinalGripRatio,
+        lateralGripRatio: selectedTirePreset.lateralGripRatio,
+        pacejkaLongitudinal: { ...selectedTirePreset.pacejkaLongitudinal },
+        pacejkaLateral: { ...selectedTirePreset.pacejkaLateral }
+    }
+    const curveDebuggerConfig = {
+        ...telemetryConfig.curveDebugger,
+        tireModel: selectedTireConfig.tireModel,
+        presetName: vehiclePhysicsConfig.tire.presetName,
+        // The debugger may draw against a different mu than gameplay for comparison.
+        // This override only affects the render-time reference curves; setting it to 0 deliberately
+        // draws a zero-grip reference without changing the gameplay tire forces.
+        surfaceFriction: telemetryConfig.curveDebugger.surfaceFriction ?? selectedTireConfig.surfaceFriction,
+        longitudinalGripRatio: selectedTireConfig.longitudinalGripRatio,
+        lateralGripRatio: selectedTireConfig.lateralGripRatio
+    }
+    // These samples are a render-time reference for the HUD only.
+    // They call the same tire-model module as gameplay, but they do not feed back into the fixed-step update.
+    // If you change the tire config in code, rebuild/restart so the debugger regenerates against the new setup.
+    const curveSamples = curveDebuggerConfig.enabled
+        ? buildPureAxisCurveSamples({
+              tireModel: selectedTireConfig.tireModel,
+              tireConfig: selectedTireConfig,
+              normalLoadN: curveDebuggerConfig.normalLoadN,
+              surfaceFriction: curveDebuggerConfig.surfaceFriction,
+              longitudinalGripRatio: curveDebuggerConfig.longitudinalGripRatio,
+              lateralGripRatio: curveDebuggerConfig.lateralGripRatio,
+              slipRatioRange: curveDebuggerConfig.slipRatioRange,
+              slipAngleRangeDeg: curveDebuggerConfig.slipAngleRangeDeg,
+              sampleCount: curveDebuggerConfig.sampleCount
+          })
+        : null
 
     const wheelBaseConfig = {
         suspensionRestLength: 0.6,
@@ -199,13 +547,16 @@ const init = async () => {
         maxBrakeTorqueNm: 3200,
         angularDampingNmPerRadPerSec: 0.5,
         rollingResistanceCoefficient: 0.015,
-        surfaceFriction: 1.05,
+        tireModel: selectedTireConfig.tireModel,
+        surfaceFriction: selectedTireConfig.surfaceFriction,
         longitudinalStiffnessPerLoad: 11.5,
         corneringStiffnessPerLoad: 9.5,
         longitudinalShape: 1.5,
         lateralShape: 1.7,
-        longitudinalGripRatio: 1,
-        lateralGripRatio: 1
+        longitudinalGripRatio: selectedTireConfig.longitudinalGripRatio,
+        lateralGripRatio: selectedTireConfig.lateralGripRatio,
+        pacejkaLongitudinal: selectedTireConfig.pacejkaLongitudinal,
+        pacejkaLateral: selectedTireConfig.pacejkaLateral
     }
 
     vehicle.addWheel(
@@ -291,19 +642,36 @@ const init = async () => {
         }
     })
 
-    const telemetryHud = telemetryConfig.enabled ? document.createElement('pre') : null
-    if (telemetryHud) {
-        telemetryHud.style.position = 'absolute'
-        telemetryHud.style.left = '8px'
-        telemetryHud.style.top = '8px'
-        telemetryHud.style.padding = '8px'
-        telemetryHud.style.margin = '0'
-        telemetryHud.style.background = 'rgba(0,0,0,0.6)'
-        telemetryHud.style.color = '#d8fdd8'
-        telemetryHud.style.font = '12px/1.3 monospace'
-        telemetryHud.style.pointerEvents = 'none'
-        telemetryHud.style.whiteSpace = 'pre'
-        document.body.appendChild(telemetryHud)
+    const telemetryHud = telemetryConfig.enabled
+        ? createOverlayElement('pre', {
+              position: 'absolute',
+              left: '8px',
+              top: '8px',
+              padding: '8px',
+              margin: '0',
+              background: 'rgba(0,0,0,0.6)',
+              color: '#d8fdd8',
+              font: '12px/1.3 monospace',
+              pointerEvents: 'none',
+              whiteSpace: 'pre'
+          })
+        : null
+    const curveDebuggerCanvas = curveDebuggerConfig.enabled
+        ? createOverlayElement('canvas', {
+              position: 'absolute',
+              left: '8px',
+              bottom: '8px',
+              width: '364px',
+              height: '340px',
+              border: '1px solid rgba(216, 253, 216, 0.18)',
+              background: 'transparent',
+              pointerEvents: 'none'
+          })
+        : null
+    const curveDebuggerContext = curveDebuggerCanvas ? curveDebuggerCanvas.getContext('2d') : null
+    if (curveDebuggerCanvas) {
+        curveDebuggerCanvas.width = 364
+        curveDebuggerCanvas.height = 340
     }
 
     let currentGear = 0
@@ -418,23 +786,33 @@ const init = async () => {
             if (index == 0 || index == 3) wheelModel.rotate(Axis.Y, Math.PI, Space.LOCAL)
         })
 
-        if (telemetryHud) {
-            const telemetry = vehicle.getWheelTelemetrySnapshot()
+        const telemetry = telemetryHud || curveDebuggerContext ? vehicle.getWheelTelemetrySnapshot() : null
+
+        if (telemetryHud && telemetry) {
             const totalNormalLoadN = telemetry.reduce((sum, wheel) => sum + wheel.normalLoadN, 0)
             const lines = [
-                `speed=${vehicle.speed.toFixed(2)}m/s grounded=${vehicle.nWheelsOnGround} FzSum=${totalNormalLoadN.toFixed(0)}N`
+                `speed=${vehicle.speed.toFixed(2)}m/s grounded=${vehicle.nWheelsOnGround} FzSum=${totalNormalLoadN.toFixed(0)}N tire=${selectedTireConfig.tireModel}/${vehiclePhysicsConfig.tire.presetName}`
             ]
             telemetry.forEach((wheel) => {
                 lines.push(
                     `W${wheel.index} ${wheel.inContact ? 'G' : 'A'} Fz=${wheel.normalLoadN.toFixed(0)}N α=${(
-                        (wheel.slipAngleRad * 180) /
-                        Math.PI
+                        wheel.slipAngleRad * RAD_TO_DEG
                     ).toFixed(1)}° κ=${wheel.slipRatio.toFixed(2)} Fx=${wheel.longitudinalForceN.toFixed(0)} Fy=${
                         wheel.lateralForceN
                     .toFixed(0)} ω=${wheel.angularVelocityRadPerSec.toFixed(1)} scale=${wheel.combinedForceScale.toFixed(2)}`
                 )
             })
             telemetryHud.textContent = lines.join('\n')
+        }
+
+        if (curveDebuggerContext && telemetry) {
+            const selectedWheelTelemetry = telemetry[curveDebuggerConfig.wheelIndex] ?? null
+            drawTireCurveDebugger({
+                context: curveDebuggerContext,
+                curveDebugger: curveDebuggerConfig,
+                curveSamples,
+                wheelTelemetry: selectedWheelTelemetry
+            })
         }
 
         const maxSpeedSound = Math.min(Math.abs(vehicle.speed), vehiclePhysicsConfig.maxVehicleSpeedMps)

@@ -1,6 +1,7 @@
 import { Vector3, Quaternion } from '@babylonjs/core/Maths/math.vector.js'
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode.js'
 import { assertNonNegativeNumber, assertPositiveNumber } from '../utils/utils.js'
+import { DEFAULT_TIRE_MODEL } from './tireModel.js'
 
 class RaycastWheel{
     constructor(options){
@@ -24,12 +25,15 @@ class RaycastWheel{
 		this.springRate = options.springRate ?? options.suspensionForce ?? 15000
 		this.damperRate = options.damperRate ?? ((options.suspensionDamping ?? 0.1) * this.springRate)
 		this.surfaceFriction = options.surfaceFriction ?? 1
+		this.tireModel = options.tireModel ?? DEFAULT_TIRE_MODEL
 		this.longitudinalStiffnessPerLoad = options.longitudinalStiffnessPerLoad ?? 12
 		this.corneringStiffnessPerLoad = options.corneringStiffnessPerLoad ?? 10
 		this.longitudinalShape = options.longitudinalShape ?? 1.6
 		this.lateralShape = options.lateralShape ?? 1.6
 		this.longitudinalGripRatio = options.longitudinalGripRatio ?? 1
 		this.lateralGripRatio = options.lateralGripRatio ?? 1
+		this.pacejkaLongitudinal = { ...(options.pacejkaLongitudinal ?? {}) }
+		this.pacejkaLateral = { ...(options.pacejkaLateral ?? {}) }
 		this.wheelInertiaKgM2 = options.wheelInertiaKgM2 ?? 1.2
 		this.maxBrakeTorqueNm = options.maxBrakeTorqueNm ?? 3200
 		this.angularDampingNmPerRadPerSec = options.angularDampingNmPerRadPerSec ?? 0.3
