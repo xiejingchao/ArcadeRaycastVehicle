@@ -8,6 +8,7 @@ import {
     computeSuspensionForce
 } from '../utils/utils.js'
 import { computeTireForces } from './tireModel.js'
+import { DEFAULT_AERODYNAMICS_CONFIG, computeAerodynamicForces } from './aerodynamics.js'
 
 const tmp1 = new Vector3()
 const tmp2 = new Vector3()
@@ -38,6 +39,38 @@ class RaycastVehicle {
         this.maxSlipRatioMagnitude = 3
         this.maxSlipAngleMagnitudeRad = Math.PI / 2
         this.angularVelocityStopThresholdRadPerSec = 0.5
+        this.raycastCollideWithMask = undefined
+        this._raycastQuery = { collideWith: ~0 }
+        this.aerodynamicsConfig = { ...DEFAULT_AERODYNAMICS_CONFIG }
+        this.aeroTelemetry = {
+            dragForceN: 0,
+            totalDownforceN: 0,
+            frontDownforceN: 0,
+            rearDownforceN: 0
+        }
+        this._shapeCastQuery = {
+            shape: null,
+            rotation: new Quaternion(),
+            startPosition: new Vector3(),
+            endPosition: new Vector3(),
+            shouldHitTriggers: false,
+            ignoreBody: this.body
+        }
+    }
+
+    getRaycastQuery() {
+        if (this.raycastCollideWithMask !== undefined) {
+            this._raycastQuery.collideWith = this.raycastCollideWithMask
+            return this._raycastQuery
+        }
+
+        const chassisMembershipMask = this.body?.shape?.filterMembershipMask
+        if (typeof chassisMembershipMask === 'number' && chassisMembershipMask !== 0 && chassisMembershipMask !== ~0) {
+            this._raycastQuery.collideWith = ~chassisMembershipMask
+            return this._raycastQuery
+        }
+
+        return undefined
     }
 
     addWheel(wheel) {
@@ -99,8 +132,43 @@ class RaycastVehicle {
     }
 
     updateWheelRaycast(wheel) {
+        const physicsPlugin = this.physicsEngine.getPhysicsPlugin?.()
+        const wheelShape = physicsPlugin?.shapeCast ? wheel.getOrCreateCollisionShape?.(this.scene) : null
+
+        if (wheelShape) {
+            const castTravel = Math.max(wheel.suspensionRestLength - wheel.radius, 0)
+            const query = this._shapeCastQuery
+            query.shape = wheelShape
+            query.rotation.copyFrom(wheel.transform.rotationQuaternion)
+            query.startPosition.copyFrom(wheel.positionWorld)
+            query.endPosition
+                .copyFrom(wheel.suspensionAxisWorld)
+                .scaleInPlace(castTravel)
+                .addInPlace(wheel.positionWorld)
+            query.shouldHitTriggers = false
+            query.ignoreBody = this.body
+
+            physicsPlugin.shapeCast(query, wheel.shapeCastInputResult, wheel.shapeCastHitResult)
+
+            const hitResult = wheel.shapeCastHitResult
+            if (!hitResult.hasHit) {
+                wheel.inContact = false
+                wheel.hitDistance = wheel.suspensionRestLength
+                wheel.hitPoint.copyFrom(wheel.positionWorld)
+                wheel.hitNormal.copyFrom(wheel.suspensionAxisWorld).negateInPlace().normalize()
+                return
+            }
+
+            wheel.hitPoint.copyFrom(hitResult.hitPoint)
+            wheel.hitNormal.copyFrom(hitResult.hitNormal)
+            wheel.hitDistance = hitResult.hitFraction * castTravel + wheel.radius
+            wheel.inContact = true
+            this.nWheelsOnGround++
+            return
+        }
+
         tmp1.copyFrom(wheel.suspensionAxisWorld).scaleInPlace(wheel.suspensionRestLength).addInPlace(wheel.positionWorld)
-        this.physicsEngine.raycastToRef(wheel.positionWorld, tmp1, raycastResult)
+        this.physicsEngine.raycastToRef(wheel.positionWorld, tmp1, raycastResult, this.getRaycastQuery())
 
         if (!raycastResult.hasHit) {
             wheel.inContact = false
@@ -125,11 +193,12 @@ class RaycastVehicle {
             return
         }
 
+        const maxCompressionMeters = Math.max(wheel.suspensionRestLength - wheel.radius, 0)
         const previousCompressionMeters = wheel.suspensionCompressionMeters
         const compressionMeters = clampNumber(
             wheel.suspensionRestLength - wheel.hitDistance,
             0,
-            wheel.suspensionRestLength
+            maxCompressionMeters
         )
         const compressionVelocityMps = (compressionMeters - previousCompressionMeters) / dtSeconds
         wheel.previousSuspensionCompressionMeters = previousCompressionMeters
@@ -141,13 +210,17 @@ class RaycastVehicle {
             wheel.damperRate,
             compressionVelocityMps
         )
-        wheel.normalLoadN = suspensionForce
+        const bumpStopStartCompression = maxCompressionMeters * clampNumber(wheel.bumpStopStartRatio ?? 0.85, 0, 1)
+        const bumpStopExcess = Math.max(0, compressionMeters - bumpStopStartCompression)
+        const bumpStopForce = bumpStopExcess * (wheel.bumpStopRate ?? 0)
+        const totalSuspensionForce = suspensionForce + bumpStopForce
+        wheel.normalLoadN = totalSuspensionForce
 
         const suspensionForceVector = Vector3.TransformNormalToRef(
             wheel.suspensionAxisLocal.negateToRef(tmp1),
             this.body.transformNode.getWorldMatrix(),
             tmp1
-        ).scaleInPlace(suspensionForce)
+        ).scaleInPlace(totalSuspensionForce)
 
         this.body.applyForce(suspensionForceVector, wheel.hitPoint)
     }
@@ -307,8 +380,10 @@ class RaycastVehicle {
     }
 
     updateWheelTransformPosition(wheel) {
+        const maxTravel = Math.max(wheel.suspensionRestLength - wheel.radius, 0)
+        const wheelOffset = clampNumber(wheel.hitDistance - wheel.radius, 0, maxTravel)
         wheel.transform.position.copyFrom(wheel.positionWorld)
-        wheel.transform.position.addInPlace(wheel.suspensionAxisWorld.scale(wheel.hitDistance - wheel.radius))
+        wheel.transform.position.addInPlace(wheel.suspensionAxisWorld.scale(wheelOffset))
     }
 
     updateVehiclePredictiveLanding(dtSeconds) {
@@ -333,7 +408,7 @@ class RaycastVehicle {
         predictedPosition.addInPlace(gravity.scaleInPlace(0.5 * predictTime * predictTime))
         predictedPosition.addInPlace(position)
 
-        this.physicsEngine.raycastToRef(position, predictedPosition, raycastResult)
+        this.physicsEngine.raycastToRef(position, predictedPosition, raycastResult, this.getRaycastQuery())
 
         if (!raycastResult.hasHit) {
             return
@@ -371,12 +446,62 @@ class RaycastVehicle {
         }))
     }
 
+    setAerodynamicsConfig(config) {
+        this.aerodynamicsConfig = { ...DEFAULT_AERODYNAMICS_CONFIG, ...config }
+    }
+
+    updateAerodynamics() {
+        const aero = computeAerodynamicForces({
+            forwardSpeedMps: this.speed,
+            linearVelocityWorld: this.body.getLinearVelocity(),
+            config: this.aerodynamicsConfig
+        })
+
+        this.aeroTelemetry.dragForceN = aero.dragForceN
+        this.aeroTelemetry.totalDownforceN = aero.totalDownforceN
+        this.aeroTelemetry.frontDownforceN = aero.frontDownforceN
+        this.aeroTelemetry.rearDownforceN = aero.rearDownforceN
+
+        if (!this.aerodynamicsConfig.enabled) {
+            return
+        }
+
+        const worldMatrix = this.body.transformNode.getWorldMatrix()
+        if (aero.dragForceN > 0) {
+            tmp1.set(aero.dragForceWorld.x, aero.dragForceWorld.y, aero.dragForceWorld.z)
+            this.body.applyForce(tmp1, this.body.transformNode.position)
+        }
+
+        if (aero.totalDownforceN > 0) {
+            const chassisDownWorld = Vector3.TransformNormalToRef(Axis.Y, worldMatrix, tmp1).negateInPlace().normalize()
+
+            if (aero.frontDownforceN > 0) {
+                const frontPoint = Vector3.TransformCoordinatesToRef(
+                    tmp3.set(0, 0, this.aerodynamicsConfig.frontAxleLocalZ),
+                    worldMatrix,
+                    tmp2
+                )
+                this.body.applyForce(chassisDownWorld.scaleToRef(aero.frontDownforceN, tmp4), frontPoint)
+            }
+
+            if (aero.rearDownforceN > 0) {
+                const rearPoint = Vector3.TransformCoordinatesToRef(
+                    tmp3.set(0, 0, this.aerodynamicsConfig.rearAxleLocalZ),
+                    worldMatrix,
+                    tmp2
+                )
+                this.body.applyForce(chassisDownWorld.scaleToRef(aero.rearDownforceN, tmp4), rearPoint)
+            }
+        }
+    }
+
     update(dtSeconds) {
         assertPositiveNumber(dtSeconds, 'vehicle.update(dtSeconds)')
 
         this.body.transformNode.computeWorldMatrix(true)
         this.nWheelsOnGround = 0
         this.updateVehicleSpeed()
+        this.updateAerodynamics()
 
         this.wheels.forEach((wheel) => {
             this.updateWheelTransform(wheel)
@@ -413,10 +538,13 @@ class RaycastVehicle {
                 wheelOrder[0].suspensionCompressionMeters - wheelOrder[1].suspensionCompressionMeters
             const compressionRatio = Math.min(compressionDifference, maxCompressionMeters) / maxCompressionMeters
 
-            const antiRollForce = tmp1.copyFrom(wheelOrder[0].suspensionAxisWorld).scaleInPlace(axle.force * compressionRatio)
+            const antiRollForce = tmp1
+                .copyFrom(wheelOrder[0].suspensionAxisWorld)
+                .negateInPlace()
+                .scaleInPlace(axle.force * compressionRatio)
             this.body.applyForce(antiRollForce, wheelOrder[0].positionWorld)
 
-            antiRollForce.copyFrom(wheelOrder[1].suspensionAxisWorld).negateInPlace().scaleInPlace(axle.force * compressionRatio)
+            antiRollForce.copyFrom(wheelOrder[1].suspensionAxisWorld).scaleInPlace(axle.force * compressionRatio)
             this.body.applyForce(antiRollForce, wheelOrder[1].positionWorld)
         })
     }
