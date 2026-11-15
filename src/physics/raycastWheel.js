@@ -1,5 +1,7 @@
 import { Vector3, Quaternion } from '@babylonjs/core/Maths/math.vector.js'
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode.js'
+import { ShapeCastResult } from '@babylonjs/core/Physics/shapeCastResult.js'
+import { PhysicsShapeCylinder } from '@babylonjs/core/Physics/v2/physicsShape.js'
 import { assertNonNegativeNumber, assertPositiveNumber } from '../utils/utils.js'
 import { DEFAULT_TIRE_MODEL } from './tireModel.js'
 
@@ -21,9 +23,12 @@ class RaycastWheel{
 		this.sideForce = options.sideForce ?? 40
 		this.sideForcePositionRatio = options.sideForcePositionRatio ?? 0.1
         this.radius = options.radius ?? 0.2
+		this.width = options.width ?? 0.2
 		this.suspensionRestLength = options.suspensionRestLength ?? 0.5
 		this.springRate = options.springRate ?? options.suspensionForce ?? 15000
 		this.damperRate = options.damperRate ?? ((options.suspensionDamping ?? 0.1) * this.springRate)
+		this.bumpStopStartRatio = options.bumpStopStartRatio ?? 0.85
+		this.bumpStopRate = options.bumpStopRate ?? 150000
 		this.surfaceFriction = options.surfaceFriction ?? 1
 		this.tireModel = options.tireModel ?? DEFAULT_TIRE_MODEL
 		this.longitudinalStiffnessPerLoad = options.longitudinalStiffnessPerLoad ?? 12
@@ -75,9 +80,12 @@ class RaycastWheel{
 		this.frictionLimitN = 0
 
 		assertPositiveNumber(this.radius, 'wheel.radius')
+		assertPositiveNumber(this.width, 'wheel.width')
 		assertPositiveNumber(this.suspensionRestLength, 'wheel.suspensionRestLength')
 		assertPositiveNumber(this.springRate, 'wheel.springRate')
 		assertNonNegativeNumber(this.damperRate, 'wheel.damperRate')
+		assertNonNegativeNumber(this.bumpStopStartRatio, 'wheel.bumpStopStartRatio')
+		assertNonNegativeNumber(this.bumpStopRate, 'wheel.bumpStopRate')
 		assertPositiveNumber(this.surfaceFriction, 'wheel.surfaceFriction')
 		assertNonNegativeNumber(this.longitudinalStiffnessPerLoad, 'wheel.longitudinalStiffnessPerLoad')
 		assertNonNegativeNumber(this.corneringStiffnessPerLoad, 'wheel.corneringStiffnessPerLoad')
@@ -92,7 +100,26 @@ class RaycastWheel{
 
         this.transform = new TransformNode("WheelTransform")
         this.transform.rotationQuaternion = new Quaternion()
+		this.shapeCastInputResult = new ShapeCastResult()
+		this.shapeCastHitResult = new ShapeCastResult()
+		this.collisionShape = null
     }
+
+	getOrCreateCollisionShape(scene) {
+		if (this.collisionShape) {
+			return this.collisionShape
+		}
+		if (!scene || typeof scene.getPhysicsEngine !== 'function' || !scene.getPhysicsEngine()) {
+			return null
+		}
+
+		const halfWidth = this.width * 0.5
+		const axleDir = this.axleAxisLocal.normalizeToNew()
+		const pointA = axleDir.scale(-halfWidth)
+		const pointB = axleDir.scale(halfWidth)
+		this.collisionShape = new PhysicsShapeCylinder(pointA, pointB, this.radius, scene)
+		return this.collisionShape
+	}
 }
 
 export default RaycastWheel

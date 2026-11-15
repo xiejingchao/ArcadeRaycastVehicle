@@ -20,10 +20,13 @@ import { CubeTexture } from '@babylonjs/core/Materials/Textures/cubeTexture.js'
 import { PhysicsMotionType } from '@babylonjs/core/Physics/v2/IPhysicsEnginePlugin.js'
 
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader.js'
+import '@babylonjs/loaders/glTF'
 
 import HavokPhysics from '@babylonjs/havok'
 import RaycastVehicle from './physics/raycastVehicle.js'
 import RaycastWheel from './physics/raycastWheel.js'
+import { DrivetrainController } from './physics/drivetrain.js'
+import { KeyboardInputProcessor } from './physics/inputSmoothing.js'
 import { clampNumber, moveTowards } from './utils/utils.js'
 import {
     DEFAULT_TIRE_MODEL,
@@ -33,11 +36,13 @@ import {
 } from './physics/tireModel.js'
 
 import { Sound } from '@babylonjs/core/Audio/sound.js'
+import '@babylonjs/core/Audio/audioEngine.js'
 import '@babylonjs/core/Audio/audioSceneComponent.js'
 
 import { Animation } from '@babylonjs/core/Animations/animation.js'
 
 const tmp1 = new Vector3()
+const tmp2 = new Vector3()
 const RAD_TO_DEG = 180 / Math.PI
 
 const createOverlayElement = (tagName, style) => {
@@ -362,7 +367,8 @@ const init = async () => {
     const engine = new Engine(canvas, true, {
         deterministicLockstep: true,
         lockstepMaxSteps: simulationConfig.maxPhysicsStepsPerFrame,
-        timeStep: simulationConfig.fixedTimeStepSeconds
+        timeStep: simulationConfig.fixedTimeStepSeconds,
+        audioEngine: true
     })
     const scene = new Scene(engine)
     Scene.MaxDeltaTime = simulationConfig.fixedTimeStepSeconds * simulationConfig.maxPhysicsStepsPerFrame * 1000
@@ -387,7 +393,10 @@ const init = async () => {
     const vehicleMesh = vehicleFiles.rootNodes[0].getChildren()[0]
     vehicleMesh.scaling.set(1.2, 1.2, 1.2)
     const wheelMesh = vehicleFiles.rootNodes[0].getChildren()[1]
-    wheelMesh.scaling.set(2.4, 1.6, 1.6)
+    // Raw Wheel mesh radius is ~0.165m and width is ~0.109m:
+    // scale (1.4, 1.21, 1.21) matches physical radius 0.2m and width ~0.15m cleanly without arch clipping.
+    wheelMesh.scaling.set(1.4, 1.21, 1.21)
+    wheelMesh.isVisible = false
 
     const HK = await HavokPhysics()
     const gravityVector = new Vector3(0, -9.81, 0)
@@ -469,11 +478,11 @@ const init = async () => {
             brakeFromDirectionChangeSpeedMps: 1.2
         },
         steering: {
-            maxSteerAngleLowSpeedRad: 0.6,
-            maxSteerAngleHighSpeedRad: 0.24,
+            maxSteerAngleLowSpeedRad: 0.52,
+            maxSteerAngleHighSpeedRad: 0.13,
             speedForMinSteerMps: 35,
-            steerRateRadiansPerSecond: 2.7,
-            steerReturnRateRadiansPerSecond: 4.8,
+            steerRateRadiansPerSecond: 2.6,
+            steerReturnRateRadiansPerSecond: 4.2,
             deadZone: 0,
             inputExponent: 1
         },
@@ -491,10 +500,22 @@ const init = async () => {
         tire: {
             model: DEFAULT_TIRE_MODEL,
             presetName: DEFAULT_TIRE_PRESET
+        },
+        aerodynamics: {
+            enabled: true,
+            airDensityKgPerM3: 1.225,
+            dragCoefficient: 0.34,
+            frontalAreaM2: 2.1,
+            downforceCoefficient: 0.65,
+            frontDownforceShare: 0.42,
+            frontAxleLocalZ: 0.8,
+            rearAxleLocalZ: -0.7,
+            maxSpeedForAeroMps: 120
         }
     }
     vehicle.predictiveLookAheadSeconds = vehiclePhysicsConfig.predictiveLookAheadSeconds
     vehicle.predictionRatio = vehiclePhysicsConfig.predictionRatio
+    vehicle.setAerodynamicsConfig(vehiclePhysicsConfig.aerodynamics)
 
     const selectedTirePreset = TIRE_MODEL_PRESETS[vehiclePhysicsConfig.tire.presetName] ?? TIRE_MODEL_PRESETS[DEFAULT_TIRE_PRESET]
     const selectedTireConfig = {
@@ -543,6 +564,9 @@ const init = async () => {
         sideForcePositionRatio: 0.1,
         sideForce: 40,
         radius: 0.2,
+        width: 0.15,
+        bumpStopStartRatio: 0.85,
+        bumpStopRate: 150000,
         wheelInertiaKgM2: 1.2,
         maxBrakeTorqueNm: 3200,
         angularDampingNmPerRadPerSec: 0.5,
@@ -562,8 +586,8 @@ const init = async () => {
     vehicle.addWheel(
         new RaycastWheel({
             ...wheelBaseConfig,
-            positionLocal: new Vector3(0.49, 0, -0.7),
-            isDriven: false,
+            positionLocal: new Vector3(0.52, 0, -0.7),
+            isDriven: true,
             isSteerable: false,
             canBrake: true
         })
@@ -572,8 +596,8 @@ const init = async () => {
     vehicle.addWheel(
         new RaycastWheel({
             ...wheelBaseConfig,
-            positionLocal: new Vector3(-0.49, 0, -0.7),
-            isDriven: false,
+            positionLocal: new Vector3(-0.52, 0, -0.7),
+            isDriven: true,
             isSteerable: false,
             canBrake: true
         })
@@ -582,7 +606,7 @@ const init = async () => {
     vehicle.addWheel(
         new RaycastWheel({
             ...wheelBaseConfig,
-            positionLocal: new Vector3(-0.49, 0, 0.8),
+            positionLocal: new Vector3(-0.52, 0, 0.8),
             isDriven: true,
             isSteerable: true,
             canBrake: true
@@ -592,7 +616,7 @@ const init = async () => {
     vehicle.addWheel(
         new RaycastWheel({
             ...wheelBaseConfig,
-            positionLocal: new Vector3(0.49, 0, 0.8),
+            positionLocal: new Vector3(0.52, 0, 0.8),
             isDriven: true,
             isSteerable: true,
             canBrake: true
@@ -603,19 +627,85 @@ const init = async () => {
     vehicle.addAntiRollAxle({ wheelA: 2, wheelB: 3, force: 10000 })
 
     const wheelMeshes = [wheelMesh.createInstance(0), wheelMesh.createInstance(1), wheelMesh.createInstance(2), wheelMesh.createInstance(3)]
+    wheelMeshes.forEach((wheelModel) => {
+        wheelModel.parent = null
+    })
 
-    const revSound = new Sound('rev', '/sounds/med_on.wav', scene, null, {
+    if (Engine.audioEngine) {
+        Engine.audioEngine.useCustomUnlockedButton = true
+    }
+
+    let engineLowPassFilter = null
+    const setupEngineFilter = () => {
+        try {
+            const audioCtx = Engine.audioEngine?.audioContext
+            const destNode = scene.mainSoundTrack?.getSoundTrackAudioNode?.() ?? Engine.audioEngine?.masterGain
+            if (!audioCtx || !destNode || engineLowPassFilter) {
+                return
+            }
+            engineLowPassFilter = audioCtx.createBiquadFilter()
+            engineLowPassFilter.type = 'lowpass'
+            engineLowPassFilter.frequency.value = 280
+            engineLowPassFilter.Q.value = 0.7
+            engineLowPassFilter.connect(destNode)
+            revSound.connectToSoundTrackAudioNode(engineLowPassFilter)
+        } catch {
+            engineLowPassFilter = null
+        }
+    }
+
+    const revSound = new Sound('rev', '/sounds/med_on.wav', scene, setupEngineFilter, {
         loop: true,
         autoplay: true,
-        playbackRate: 1,
-        volume: 0.3
+        playbackRate: 0.55,
+        volume: 0.04
     })
 
     const shiftSound = new Sound('shift', '/sounds/shift_1.wav', scene, null, {
         loop: false,
         autoplay: false,
         playbackRate: 1,
-        volume: 0.8
+        volume: 0.65
+    })
+
+    const unlockAudio = () => {
+        if (Engine.audioEngine && !Engine.audioEngine.unlocked) {
+            Engine.audioEngine.unlock()
+        }
+        setupEngineFilter()
+        if (revSound.isReady() && !revSound.isPlaying) {
+            revSound.play()
+        }
+    }
+    window.addEventListener('pointerdown', unlockAudio)
+    window.addEventListener('keydown', unlockAudio)
+
+    let soundMuted = false
+    const soundToggleBtn = createOverlayElement('button', {
+        position: 'absolute',
+        left: '12px',
+        top: '12px',
+        padding: '6px 10px',
+        borderRadius: '6px',
+        border: '1px solid rgba(255, 255, 255, 0.16)',
+        background: 'rgba(10, 14, 22, 0.72)',
+        color: '#e8eef7',
+        font: '12px/1.2 monospace',
+        cursor: 'pointer',
+        zIndex: '10'
+    })
+    soundToggleBtn.type = 'button'
+    soundToggleBtn.tabIndex = -1
+    const syncSoundToggleLabel = () => {
+        soundToggleBtn.textContent = soundMuted ? '🔇 Sound: OFF' : '🔊 Sound: ON'
+    }
+    syncSoundToggleLabel()
+    soundToggleBtn.addEventListener('click', () => {
+        unlockAudio()
+        soundMuted = !soundMuted
+        Engine.audioEngine?.setGlobalVolume(soundMuted ? 0 : 1)
+        syncSoundToggleLabel()
+        soundToggleBtn.blur()
     })
 
     const controls = {
@@ -625,20 +715,46 @@ const init = async () => {
         right: false
     }
 
+    const inputProcessor = new KeyboardInputProcessor({
+        directionChangeSpeedMps: vehiclePhysicsConfig.drivetrain.brakeFromDirectionChangeSpeedMps,
+        maxSteerAngleLowSpeedRad: vehiclePhysicsConfig.steering.maxSteerAngleLowSpeedRad,
+        maxSteerAngleHighSpeedRad: vehiclePhysicsConfig.steering.maxSteerAngleHighSpeedRad,
+        speedForMinSteerMps: vehiclePhysicsConfig.steering.speedForMinSteerMps
+    })
+
+    const resetControls = () => {
+        controls.forward = false
+        controls.backward = false
+        controls.left = false
+        controls.right = false
+        inputProcessor.reset()
+    }
+
     scene.onKeyboardObservable.add((kbInfo) => {
+        const key = kbInfo.event.key?.toLowerCase()
         switch (kbInfo.type) {
             case KeyboardEventTypes.KEYDOWN:
-                if (kbInfo.event.key == 'w') controls.forward = true
-                if (kbInfo.event.key == 's') controls.backward = true
-                if (kbInfo.event.key == 'a') controls.left = true
-                if (kbInfo.event.key == 'd') controls.right = true
+                if (key === 'w') controls.forward = true
+                if (key === 's') controls.backward = true
+                if (key === 'a') controls.left = true
+                if (key === 'd') controls.right = true
                 break
             case KeyboardEventTypes.KEYUP:
-                if (kbInfo.event.key == 'w') controls.forward = false
-                if (kbInfo.event.key == 's') controls.backward = false
-                if (kbInfo.event.key == 'a') controls.left = false
-                if (kbInfo.event.key == 'd') controls.right = false
+                if (key === 'w') controls.forward = false
+                if (key === 's') controls.backward = false
+                if (key === 'a') controls.left = false
+                if (key === 'd') controls.right = false
                 break
+        }
+    })
+
+    window.addEventListener('blur', resetControls)
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            resetControls()
+            Engine.audioEngine?.setGlobalVolume(0)
+        } else {
+            Engine.audioEngine?.setGlobalVolume(soundMuted ? 0 : 1)
         }
     })
 
@@ -674,58 +790,144 @@ const init = async () => {
         curveDebuggerCanvas.height = 340
     }
 
-    let currentGear = 0
+    const drivetrain = new DrivetrainController()
+
+    const debugHud = createOverlayElement('div', {
+        position: 'absolute',
+        right: '12px',
+        top: '12px',
+        width: '248px',
+        padding: '10px 12px',
+        borderRadius: '8px',
+        background: 'rgba(10, 14, 22, 0.72)',
+        border: '1px solid rgba(255, 255, 255, 0.14)',
+        color: '#e8eef7',
+        font: '12px/1.4 monospace',
+        userSelect: 'none',
+        zIndex: '10'
+    })
+    debugHud.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+            <span id="hudSpeed" style="font-size:15px;font-weight:700;">0 km/h (0.0 m/s)</span>
+            <span id="hudGear" style="color:#72f0a7;font-weight:700;">G1</span>
+        </div>
+        <div style="margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;"><span>RPM</span><span id="hudRpm">900</span></div>
+            <div style="height:6px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;">
+                <div id="hudRpmBar" style="height:100%;width:0%;background:#67d5ff;"></div>
+            </div>
+        </div>
+        <div style="margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;"><span>Steer</span><span id="hudSteer">0.0°</span></div>
+            <div style="position:relative;height:6px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;">
+                <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.35);"></div>
+                <div id="hudSteerBar" style="position:absolute;top:0;bottom:0;left:50%;width:0%;background:#ffd166;"></div>
+            </div>
+        </div>
+        <div style="margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;"><span>Throttle</span><span id="hudThrottle">0%</span></div>
+            <div style="height:6px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;">
+                <div id="hudThrottleBar" style="height:100%;width:0%;background:#72f0a7;"></div>
+            </div>
+        </div>
+        <div style="margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;"><span>Brake</span><span id="hudBrake">0%</span></div>
+            <div style="height:6px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;">
+                <div id="hudBrakeBar" style="height:100%;width:0%;background:#ff6b6b;"></div>
+            </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;color:#b7c4d8;">
+            <span>Aero</span><span id="hudAero">Drag 0N | DF 0N</span>
+        </div>
+        <div style="display:flex;gap:6px;">
+            <button id="hudAbsBtn" type="button" tabindex="-1" style="flex:1;padding:4px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:#1f3a2e;color:#72f0a7;font:inherit;cursor:pointer;">ABS: ON</button>
+            <button id="hudTcsBtn" type="button" tabindex="-1" style="flex:1;padding:4px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:#1f3a2e;color:#72f0a7;font:inherit;cursor:pointer;">TCS: ON</button>
+        </div>
+    `
+    const hudSpeedEl = debugHud.querySelector('#hudSpeed')
+    const hudGearEl = debugHud.querySelector('#hudGear')
+    const hudRpmEl = debugHud.querySelector('#hudRpm')
+    const hudRpmBarEl = debugHud.querySelector('#hudRpmBar')
+    const hudSteerEl = debugHud.querySelector('#hudSteer')
+    const hudSteerBarEl = debugHud.querySelector('#hudSteerBar')
+    const hudThrottleEl = debugHud.querySelector('#hudThrottle')
+    const hudThrottleBarEl = debugHud.querySelector('#hudThrottleBar')
+    const hudBrakeEl = debugHud.querySelector('#hudBrake')
+    const hudBrakeBarEl = debugHud.querySelector('#hudBrakeBar')
+    const hudAeroEl = debugHud.querySelector('#hudAero')
+    const hudAbsBtn = debugHud.querySelector('#hudAbsBtn')
+    const hudTcsBtn = debugHud.querySelector('#hudTcsBtn')
+
+    const syncAssistButtonStyle = (button, label, enabled, active) => {
+        button.textContent = active ? `${label}: ACTIVE` : `${label}: ${enabled ? 'ON' : 'OFF'}`
+        if (!enabled) {
+            button.style.background = '#2a2a32'
+            button.style.color = '#9aa4b2'
+            return
+        }
+        button.style.background = active ? '#5c4314' : '#1f3a2e'
+        button.style.color = active ? '#ffd166' : '#72f0a7'
+    }
+
+    hudAbsBtn.addEventListener('click', () => {
+        drivetrain.absEnabled = !drivetrain.absEnabled
+        syncAssistButtonStyle(hudAbsBtn, 'ABS', drivetrain.absEnabled, false)
+        hudAbsBtn.blur()
+    })
+    hudTcsBtn.addEventListener('click', () => {
+        drivetrain.tcsEnabled = !drivetrain.tcsEnabled
+        syncAssistButtonStyle(hudTcsBtn, 'TCS', drivetrain.tcsEnabled, false)
+        hudTcsBtn.blur()
+    })
+
     let steerValue = 0
 
     revSound.play()
     scene.onBeforePhysicsObservable.add(() => {
-        const dtSeconds = simulationConfig.fixedTimeStepSeconds
+        if (!Number.isFinite(chassisMesh.position.y) || chassisMesh.position.y < -15) {
+            chassisMesh.position.set(0, 2, 0)
+            chassisMesh.rotationQuaternion.set(0, 0, 0, 1)
+            chassisPhysicsBody.setLinearVelocity(Vector3.Zero())
+            chassisPhysicsBody.setAngularVelocity(Vector3.Zero())
+            inputProcessor.reset()
+        }
 
-        const longitudinalInput = (controls.forward ? 1 : 0) + (controls.backward ? -1 : 0)
-        const steerInput = (controls.right ? 1 : 0) + (controls.left ? -1 : 0)
+        const dtSeconds = simulationConfig.fixedTimeStepSeconds
         const speedAbs = Math.abs(vehicle.speed)
 
-        const maxSteerBySpeed =
-            vehiclePhysicsConfig.steering.maxSteerAngleLowSpeedRad +
-            (vehiclePhysicsConfig.steering.maxSteerAngleHighSpeedRad -
-                vehiclePhysicsConfig.steering.maxSteerAngleLowSpeedRad) *
-                clampNumber(speedAbs / vehiclePhysicsConfig.steering.speedForMinSteerMps, 0, 1)
+        const steerableContactWheelsForInput = vehicle.wheels.filter((wheel) => wheel.isSteerable && wheel.inContact)
+        const avgSteerableSlipAngleRad =
+            steerableContactWheelsForInput.length > 0
+                ? steerableContactWheelsForInput.reduce((acc, wheel) => acc + wheel.slipAngleRad, 0) /
+                  steerableContactWheelsForInput.length
+                : 0
 
-        const shapedSteerInput = shapeAxisInput(
-            steerInput,
-            vehiclePhysicsConfig.steering.deadZone,
-            vehiclePhysicsConfig.steering.inputExponent
-        )
-        const targetSteer = shapedSteerInput * maxSteerBySpeed
-        const steerRate =
-            shapedSteerInput === 0
-                ? vehiclePhysicsConfig.steering.steerReturnRateRadiansPerSecond
-                : vehiclePhysicsConfig.steering.steerRateRadiansPerSecond
-        steerValue = moveTowards(steerValue, targetSteer, steerRate * dtSeconds)
-        steerValue = clampNumber(steerValue, -maxSteerBySpeed, maxSteerBySpeed)
-
-        const speedForDriveCurve = Math.min(speedAbs, vehiclePhysicsConfig.maxVehicleSpeedMps)
-        const speedProgress = (speedForDriveCurve / vehiclePhysicsConfig.maxVehicleSpeedMps) * 100
-        const driveCurveScale = accelerationCurve.evaluate(speedProgress)
-        const isDirectionChangeBrake =
-            longitudinalInput !== 0 &&
-            speedAbs > vehiclePhysicsConfig.drivetrain.brakeFromDirectionChangeSpeedMps &&
-            Math.sign(vehicle.speed) !== Math.sign(longitudinalInput)
-
-        const totalDriveTorqueNm = isDirectionChangeBrake
-            ? 0
-            : longitudinalInput * driveCurveScale * vehiclePhysicsConfig.drivetrain.maxDriveTorqueNm
-        const brakeInput = isDirectionChangeBrake ? Math.abs(longitudinalInput) : 0
-
-        const drivenWheels = vehicle.wheels.filter((wheel) => wheel.isDriven)
-        const driveTorquePerWheelNm = drivenWheels.length > 0 ? totalDriveTorqueNm / drivenWheels.length : 0
+        const smoothedInput = inputProcessor.step({
+            dtSeconds,
+            forwardPressed: controls.forward,
+            backwardPressed: controls.backward,
+            leftPressed: controls.left,
+            rightPressed: controls.right,
+            vehicleSpeedMps: vehicle.speed,
+            averageSlipAngleRad: avgSteerableSlipAngleRad
+        })
+        steerValue = smoothedInput.steerAngleRad
 
         vehicle.wheels.forEach((wheel) => {
             wheel.steering = wheel.isSteerable ? steerValue : 0
-            wheel.driveTorqueNm = wheel.isDriven ? driveTorquePerWheelNm : 0
-            wheel.brakeTorqueNm = wheel.canBrake ? brakeInput * wheel.maxBrakeTorqueNm : 0
             wheel.force = 0
         })
+
+        const drivetrainState = drivetrain.step({
+            dtSeconds,
+            vehicleSpeedMps: vehicle.speed,
+            longitudinalInput: smoothedInput.longitudinalInput,
+            wheels: vehicle.wheels,
+            directionChangeSpeedMps: vehiclePhysicsConfig.drivetrain.brakeFromDirectionChangeSpeedMps
+        })
+        if (drivetrainState.shiftOccurred && Engine.audioEngine?.unlocked) {
+            shiftSound.play()
+        }
 
         vehicle.update(dtSeconds)
 
@@ -772,7 +974,7 @@ const init = async () => {
             )
 
             if (yawAssistTorqueNm !== 0 && Number.isFinite(yawAssistTorqueNm)) {
-                chassisPhysicsBody.applyTorque(chassisUp.scale(yawAssistTorqueNm))
+                chassisPhysicsBody.applyTorque(chassisUp.scaleToRef(yawAssistTorqueNm, tmp2))
             }
         }
     })
@@ -815,15 +1017,58 @@ const init = async () => {
             })
         }
 
-        const maxSpeedSound = Math.min(Math.abs(vehicle.speed), vehiclePhysicsConfig.maxVehicleSpeedMps)
-        const gearProgression = (maxSpeedSound * vehiclePhysicsConfig.numberOfGears) / vehiclePhysicsConfig.maxVehicleSpeedMps
-        const currentGearNumber = Math.floor(gearProgression)
-        const gearRatio = gearProgression - currentGearNumber
-        revSound.setPlaybackRate(currentGearNumber / vehiclePhysicsConfig.numberOfGears + 1.2 * gearRatio)
-        if (currentGear !== currentGearNumber) {
-            currentGear = currentGearNumber
-            shiftSound.play()
+        const rpmRatio = clampNumber(
+            (drivetrain.rpm - drivetrain.config.idleRpm) /
+                Math.max(drivetrain.config.maxRpm - drivetrain.config.idleRpm, 1),
+            0,
+            1
+        )
+        try {
+            const safeRate = 0.55 + 1.15 * rpmRatio
+            const safeVol = 0.04 + 0.14 * drivetrain.throttleOpenRatio + 0.08 * rpmRatio
+            if (Number.isFinite(safeRate)) {
+                revSound.setPlaybackRate(safeRate)
+            }
+            if (Number.isFinite(safeVol)) {
+                revSound.setVolume(safeVol)
+            }
+            if (engineLowPassFilter && Number.isFinite(rpmRatio)) {
+                engineLowPassFilter.frequency.value =
+                    280 + 2120 * Math.max(drivetrain.throttleOpenRatio, rpmRatio * 0.8)
+            }
+        } catch {
+            // Audio updates must never interrupt 3D rendering
         }
+
+        const speedMps = vehicle.speed
+        const speedKmh = speedMps * 3.6
+        hudSpeedEl.textContent = `${Math.abs(speedKmh).toFixed(0)} km/h (${speedMps.toFixed(1)} m/s)`
+        hudGearEl.textContent = drivetrain.gear === -1 ? 'R' : `G${drivetrain.gear}`
+        hudRpmEl.textContent = `${Math.round(drivetrain.rpm)}`
+        hudRpmBarEl.style.width = `${(rpmRatio * 100).toFixed(1)}%`
+
+        const steerDeg = steerValue * RAD_TO_DEG
+        hudSteerEl.textContent = `${steerDeg >= 0 ? '+' : ''}${steerDeg.toFixed(1)}°`
+        const steerHalfPct = clampNumber(
+            (Math.abs(steerValue) / Math.max(vehiclePhysicsConfig.steering.maxSteerAngleLowSpeedRad, 1e-4)) * 50,
+            0,
+            50
+        )
+        hudSteerBarEl.style.width = `${steerHalfPct.toFixed(1)}%`
+        hudSteerBarEl.style.left = steerValue >= 0 ? '50%' : `${(50 - steerHalfPct).toFixed(1)}%`
+
+        const throttlePct = Math.round(drivetrain.throttleOpenRatio * 100)
+        const brakePct = Math.round(drivetrain.brakeOpenRatio * 100)
+        hudThrottleEl.textContent = `${throttlePct}%`
+        hudThrottleBarEl.style.width = `${throttlePct}%`
+        hudBrakeEl.textContent = `${brakePct}%`
+        hudBrakeBarEl.style.width = `${brakePct}%`
+        hudAeroEl.textContent = `Drag ${Math.round(vehicle.aeroTelemetry.dragForceN)}N | DF ${Math.round(
+            vehicle.aeroTelemetry.totalDownforceN
+        )}N`
+
+        syncAssistButtonStyle(hudAbsBtn, 'ABS', drivetrain.absEnabled, drivetrain.absActive)
+        syncAssistButtonStyle(hudTcsBtn, 'TCS', drivetrain.tcsEnabled, drivetrain.tcsActive)
     })
 
     engine.runRenderLoop(() => {
